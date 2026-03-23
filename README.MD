@@ -1,4 +1,4 @@
-# HIBI-2024 · Product Overview (Customer Edition)
+# HIBI-2023 · Product Overview (Customer Edition)
 
 **HIBI** is a **cross-device assistant app** for daily work and study. It runs on **Windows, Android, iOS**, and more. You can capture ideas, manage your schedule, chat with an AI assistant, and send files quickly over the local network—data can stay on the device only, and after sign-in it can also sync across your devices.
 
