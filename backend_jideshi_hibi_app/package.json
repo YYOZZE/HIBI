@@ -1,0 +1,14 @@
+{
+  "name": "backend_jideshi_hibi_app",
+  "version": "1.0.0",
+  "description": "希比 HIBI 助理后端，预留豆包 API 接入",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5"
+  }
+}

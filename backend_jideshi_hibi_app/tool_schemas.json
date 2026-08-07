@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HIBI 智能体工具调用参数",
+  "description": "与豆包/OpenAI 兼容的 tools[].function.parameters（JSON Schema）",
+  "definitions": {
+    "get_mind_canvas": {
+      "type": "object",
+      "properties": {
+        "project_name": {
+          "type": "string",
+          "description": "思维节点（项目）名称，与用户 mind 列表中的 title 匹配"
+        }
+      },
+      "required": ["project_name"]
+    },
+    "get_schedule": {
+      "type": "object",
+      "properties": {
+        "start_date": {
+          "type": "string",
+          "description": "开始日期，ISO8601 仅日期，如 2025-03-20"
+        },
+        "end_date": {
+          "type": "string",
+          "description": "结束日期，ISO8601 仅日期，如 2025-03-27"
+        }
+      },
+      "required": ["start_date", "end_date"]
+    },
+    "create_schedule": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "日程标题" },
+        "start_time": { "type": "string", "description": "开始时间 ISO8601，如 2025-03-20T14:00:00" },
+        "end_time": { "type": "string", "description": "结束时间 ISO8601" },
+        "is_all_day": { "type": "boolean", "description": "是否全天", "default": false },
+        "location": { "type": "string", "description": "地点" },
+        "reminder_minutes": { "type": "integer", "description": "提前多少分钟提醒" },
+        "essence": { "type": "string", "description": "要义/要点" }
+      },
+      "required": ["title", "start_time", "end_time"]
+    },
+    "set_block_reminder": {
+      "type": "object",
+      "properties": {
+        "project_name": { "type": "string", "description": "思维节点（项目）名称" },
+        "block_id": { "type": "string", "description": "方块 id（白板中 block 的 id）" },
+        "start_time": { "type": "string", "description": "提醒开始时间 ISO8601" },
+        "end_time": { "type": "string", "description": "提醒结束时间 ISO8601" }
+      },
+      "required": ["project_name", "block_id", "start_time", "end_time"]
+    }
+  }
+}

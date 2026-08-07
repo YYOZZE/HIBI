@@ -1,0 +1,7 @@
+httpx
+fastapi
+uvicorn
+python-multipart
+cryptography
+aiohttp
+websockets

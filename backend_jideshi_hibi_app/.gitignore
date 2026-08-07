@@ -1,0 +1,21 @@
+# 环境与密钥，不要提交到 Git
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# 日志与本地数据
+*.log
+app.log
+data/
+
+# 用户上传文件与数据库（勿提交）
+uploads/
+*.db

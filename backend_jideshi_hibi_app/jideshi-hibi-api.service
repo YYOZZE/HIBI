@@ -1,0 +1,14 @@
+[Unit]
+Description=HIBI API (jideshi_hibi_backend)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/jideshi_hibi_backend
+Environment=HIBI_DATA_DIR=/root/jideshi_hibi_backend/data
+ExecStart=/root/jideshi_hibi_backend/venv/bin/python -m uvicorn api_only_app:app --host 0.0.0.0 --port 7861
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

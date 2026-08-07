@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 允许访问用户配置的 HTTP 后端（ECS IP:端口、图形认证 embed 页等）。Android 9+ 默认禁止明文，否则 WebView 报 ERR_CLEARTEXT_NOT_PERMITTED。生产环境建议后端改为 HTTPS 后移除此策略或改为按域名放行。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,6 @@
+# 复制为 key.properties 并填写；key.properties 已 gitignore，勿提交
+# Keystore 路径可用绝对路径（推荐）或相对于 android/ 的路径
+storePassword=your_store_password
+keyPassword=your_key_password
+keyAlias=hibi_2024_key
+storeFile=C:/Users/.../hibi_2024_key.jks
