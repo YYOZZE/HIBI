@@ -107,7 +107,7 @@ void main() {
     expect(find.text('检查更新'), findsOneWidget);
   });
 
-  testWidgets('手动检查有更新：弹「发现新版本」对话框，稍后提醒可关闭', (tester) async {
+  testWidgets('手动检查有更新：弹「发现新版本」对话框，稍后可关闭', (tester) async {
     AppUpdateService.debugCheckHttpGet = (uri, headers) async =>
         _jsonResponse(_releaseJson());
     await tester.pumpWidget(_wrap(const AboutVersionPage()));
@@ -116,17 +116,39 @@ void main() {
     await _tapCheckButton(tester);
     await tester.pumpAndSettle();
 
-    // 对话框内容
-    expect(find.byType(AlertDialog), findsOneWidget);
-    expect(find.text('稍后提醒'), findsOneWidget);
-    expect(find.text('版本:V9.9.9'), findsOneWidget);
-    expect(find.textContaining('文件大小：'), findsOneWidget);
-    // 状态卡片同步展示更新徽标
+    // 对话框内容（自定义 Dialog，不透明实底）
+    final dialog = find.byType(Dialog);
+    expect(dialog, findsOneWidget);
+    expect(
+      find.descendant(of: dialog, matching: find.text('发现新版本')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text('V9.9.9')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.textContaining('当前 ')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text('更新说明')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text('立即更新')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: dialog, matching: find.text('稍后')),
+      findsOneWidget,
+    );
+    // 状态卡片同步展示更新徽标（页面上也有「立即更新」）
     expect(find.textContaining('发现新版本 V 9.9.9'), findsOneWidget);
 
-    await tester.tap(find.text('稍后提醒'));
+    await tester.tap(find.descendant(of: dialog, matching: find.text('稍后')));
     await tester.pumpAndSettle();
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(Dialog), findsNothing);
   });
 
   testWidgets('对话框「立即更新」跳转下载流程页', (tester) async {
@@ -138,7 +160,7 @@ void main() {
     await _tapCheckButton(tester);
     await tester.pumpAndSettle();
     final updateButton = find.descendant(
-      of: find.byType(AlertDialog),
+      of: find.byType(Dialog),
       matching: find.widgetWithText(FilledButton, '立即更新'),
     );
     expect(updateButton, findsOneWidget);
@@ -157,7 +179,7 @@ void main() {
     await _tapCheckButton(tester);
     await tester.pumpAndSettle();
 
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('立即更新'), findsNothing);
     // 状态卡片与 SnackBar 都会展示该文案，这里验证 SnackBar 提示
     expect(
       find.descendant(
@@ -180,7 +202,7 @@ void main() {
     await _tapCheckButton(tester);
     await tester.pumpAndSettle();
 
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(Dialog), findsNothing);
     expect(find.text('检查过于频繁，请稍后再试'), findsOneWidget);
   });
 
@@ -193,7 +215,7 @@ void main() {
     await _tapCheckButton(tester);
     await tester.pumpAndSettle();
 
-    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.byType(Dialog), findsNothing);
     expect(find.text('检查失败，请检查网络后重试'), findsOneWidget);
   });
 
@@ -223,6 +245,6 @@ void main() {
     gate.complete(_jsonResponse(_releaseJson()));
     await tester.pumpAndSettle();
     expect(hits, 1);
-    expect(find.byType(AlertDialog), findsOneWidget);
+    expect(find.byType(Dialog), findsOneWidget);
   });
 }
