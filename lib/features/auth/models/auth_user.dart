@@ -11,28 +11,35 @@ class AuthUser {
   });
 
   final String userId;
-  /// 登录账号：手机号/邮箱，或 `github:<login>`
+  /// 登录账号：`github:<login>` / `local:<id>` 等
   final String phoneOrEmail;
   /// 展示用昵称，可选
   final String? nickname;
   /// 头像地址（可为 http(s) URL 或本地文件路径）
   final String? avatarUrl;
-  /// 访问接口用的令牌（后端 Bearer 或 GitHub OAuth access token）
+  /// 访问令牌：GitHub OAuth access token，或本地会话标记 `local_…`
   final String token;
   /// GitHub 用户名（login）
   final String? githubLogin;
-  /// `github` | `legacy` | `mock`
+  /// `github` | `local` | `legacy` | `mock`
   final String authProvider;
 
+  bool get isLocal =>
+      authProvider == 'local' ||
+      token.startsWith('local_') ||
+      phoneOrEmail.startsWith('local:');
+
   bool get isGitHub =>
-      authProvider == 'github' ||
-      (githubLogin != null && githubLogin!.trim().isNotEmpty);
+      !isLocal &&
+      (authProvider == 'github' ||
+          (githubLogin != null && githubLogin!.trim().isNotEmpty));
 
   String get displayName {
     if (nickname?.trim().isNotEmpty == true) return nickname!;
     if (githubLogin != null && githubLogin!.trim().isNotEmpty) {
       return githubLogin!;
     }
+    if (isLocal) return '本地账号';
     return phoneOrEmail;
   }
 

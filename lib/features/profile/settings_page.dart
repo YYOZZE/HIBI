@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:app_settings/app_settings.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../app/app_version.dart';
 import '../../app/app_glass_styles.dart';
@@ -10,12 +11,18 @@ import '../../app/frosted_background.dart';
 import '../../app/theme_notifier.dart';
 import '../../app/theme_notifier_scope.dart';
 import '../../app/theme_policy_service.dart';
+import '../auth/services/auth_repository.dart';
+import '../auth/services/local_account_import_service.dart';
 import 'about_version_page.dart';
 import 'agent_config_page.dart';
 import 'privacy_terms_page.dart';
 import 'services/app_update_service.dart';
+import '../lan_sync/lan_sync_page.dart';
 import '../transfer/transfer_file_actions.dart';
 import '../transfer/transfer_save_path.dart';
+
+/// 与订阅页「给作者买杯咖啡」同一外链（Buy Me a Coffee）。
+const String _kBuyMeACoffeeUrl = 'https://buymeacoffee.com/yyozze';
 
 /// 设置页：通知、权限、文件传输保存路径、关于等（与希比主题统一：毛玻璃背景 + 卡片）
 class SettingsPage extends StatefulWidget {
@@ -58,6 +65,24 @@ class _SettingsPageState extends State<SettingsPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已恢复为默认保存路径')),
       );
+    }
+  }
+
+  Future<void> _openBuyMeACoffee() async {
+    final uri = Uri.parse(_kBuyMeACoffeeUrl);
+    try {
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (mounted && !launched) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('无法打开链接，请检查是否已安装浏览器')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('无法打开链接')),
+        );
+      }
     }
   }
 
@@ -156,6 +181,32 @@ class _SettingsPageState extends State<SettingsPage> {
                         await _resetTransferSavePath();
                       },
                     ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.sync_alt_outlined,
+                      title: '局域网数据同步',
+                      subtitle: '同账号设备互相同步思维 / 日程 / 智能体',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const LanSyncPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    if (AuthRepository.instance.accessState ==
+                        AppAccessState.githubOk) ...[
+                      Divider(
+                          height: 1,
+                          color: colorScheme.outline.withOpacity(0.3)),
+                      _SettingsTile(
+                        icon: Icons.upload_file_outlined,
+                        title: '从本机其他账号导入',
+                        subtitle: '合并 local / 旧登录等目录到当前 GitHub 账号',
+                        onTap: () =>
+                            LocalAccountImportService.showManualImport(context),
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -211,6 +262,13 @@ class _SettingsPageState extends State<SettingsPage> {
                           ),
                         );
                       },
+                    ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.coffee_outlined,
+                      title: '给作者买一杯咖啡',
+                      subtitle: '支持开发者（Buy Me a Coffee）',
+                      onTap: _openBuyMeACoffee,
                     ),
                   ],
                 ),

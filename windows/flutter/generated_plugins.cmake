@@ -7,9 +7,11 @@ list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_windows
   flutter_secure_storage_windows
   flutter_timezone
+  fullscreen_window
   permission_handler_windows
   record_windows
   url_launcher_windows
+  webview_win_floating
   webview_windows
 )
 

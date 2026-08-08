@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -15,11 +17,10 @@ enum _LoginStep {
   done,
 }
 
-/// GitHub Device Flow 登录 + 必须 Star 仓库门禁页。
+/// GitHub Device Flow 登录 + Star 门禁（文案精简；默认内嵌 WebView）。
 class GitHubLoginPage extends StatefulWidget {
   const GitHubLoginPage({super.key, this.embedded = false});
 
-  /// 作为启动门禁嵌入时为 true（无返回按钮）。
   final bool embedded;
 
   @override
@@ -31,6 +32,7 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
 
   bool _busy = false;
   bool _cancelled = false;
+  int _flowGen = 0;
   String? _userCode;
   String? _verificationUri;
   String? _error;
@@ -40,29 +42,51 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
   String? _pendingLogin;
   _LoginStep _step = _LoginStep.idle;
   bool _webviewOpen = false;
-  bool _lastErrorNetwork = false;
+  bool _reopeningWeb = false;
+  GitHubDeviceCode? _activeDevice;
   GitHubDeviceWebViewController? _webController;
+  Timer? _slowRequestTimer;
+  bool _showSlowHint = false;
+
+  /// 已拿到设备码、正在等用户点 Authorize（poll 仍在跑）。
+  bool get _awaitingUserAuth =>
+      _step == _LoginStep.awaitAuth && _activeDevice != null;
+
+  /// 关闭内嵌窗后仍可再开；窗已开则不必重复点。
+  bool get _canOpenAuthPage =>
+      !_webviewOpen &&
+      !_reopeningWeb &&
+      (_activeDevice != null || _userCode != null) &&
+      (_awaitingUserAuth || !_busy);
+
+  /// 等待授权时也允许切本地账号（会取消本轮 GitHub poll）。
+  bool get _canEnterLocal => !_busy || _awaitingUserAuth;
+
+  /// 系统浏览器备用：空闲可发起；等待授权时可打开同一次验证 URL。
+  bool get _canOpenSystemBrowser => !_busy || _awaitingUserAuth;
 
   @override
   void initState() {
     super.initState();
-    // 本地已有 GitHub 会话但未过 Star：只引导 Star，勿再走网页输密码。
-    final u = AuthRepository.instance.currentUser;
-    if (u != null &&
-        u.isGitHub &&
-        u.token.isNotEmpty &&
-        !AuthRepository.instance.githubAccessGrantedNotifier.value) {
-      _needStar = true;
-      _pendingToken = u.token;
-      _pendingLogin = u.githubLogin;
-      _step = _LoginStep.checkStar;
-      _status = '已恢复本地登录。请 Star 仓库后点「我已 Star」继续（无需再输入密码）。';
-    }
+    _syncFromAuthGate();
+  }
+
+  /// 冷启动 / 升级后：已授权未 Star → 直接显示 Star 引导（不进主壳）。
+  void _syncFromAuthGate() {
+    final auth = AuthRepository.instance;
+    if (auth.accessState != AppAccessState.githubNeedStar) return;
+    final u = auth.currentUser!;
+    _needStar = true;
+    _pendingToken = u.token;
+    _pendingLogin = u.githubLogin;
+    _step = _LoginStep.checkStar;
+    _status = '请 Star 后继续';
   }
 
   @override
   void dispose() {
     _cancelled = true;
+    _slowRequestTimer?.cancel();
     _disposeWebController();
     super.dispose();
   }
@@ -73,155 +97,265 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
     _webviewOpen = false;
   }
 
-  void _onWebAuthSucceeded() {
-    if (!mounted) return;
-    setState(() {
-      _status = '已检测到 GitHub 授权成功，正在确认并继续…';
-      _error = null;
+  void _armSlowHint() {
+    _slowRequestTimer?.cancel();
+    _showSlowHint = false;
+    _slowRequestTimer = Timer(const Duration(seconds: 6), () {
+      if (!mounted || !_busy || _step != _LoginStep.requestCode) return;
+      setState(() => _showSlowHint = true);
     });
   }
 
-  /// 尽快打开内嵌登录页（账号密码框在 GitHub 网页），与申请设备码并行。
-  Future<bool> _ensureWebViewOpen({String? initialUrl}) async {
-    if (!mounted) return false;
-    if (_webviewOpen && _webController != null) {
-      if (initialUrl != null) {
-        _webController!.navigateTo(initialUrl, force: true);
-      }
-      return true;
-    }
-    if (!githubDeviceWebViewSupported()) return false;
-
-    // 复用尚未关闭的控制器；否则新建。登录流程结束前不 dispose，
-    // 以便申请码返回后仍能跳转验证页；授权成功后由 WebView 自行关窗。
-    final controller = _webController ??
-        GitHubDeviceWebViewController(
-          initialUrl: initialUrl ?? kGitHubLoginUrl,
-          userCode: _userCode,
-          onAuthSucceeded: _onWebAuthSucceeded,
-        );
-    _webController = controller;
-    if (initialUrl != null) controller.navigateTo(initialUrl, force: true);
-
-    final presented = await openGitHubDeviceAuthWebView(
-      context: context,
-      controller: controller,
-      onClosed: () {
-        if (mounted) setState(() => _webviewOpen = false);
-      },
-    );
-    if (mounted) setState(() => _webviewOpen = presented);
-    return presented;
+  void _clearSlowHint() {
+    _slowRequestTimer?.cancel();
+    _slowRequestTimer = null;
+    _showSlowHint = false;
   }
 
-  Future<void> _openSystemBrowserFallback() async {
-    final uri = _verificationUri ?? kGitHubLoginUrl;
-    await _oauth.openVerificationPage(uri);
-    if (!mounted) return;
-    setState(() {
-      _status = _verificationUri == null
-          ? '已在系统浏览器打开 GitHub 登录页。请登录后回到本 App 点「重试登录」完成授权。'
-          : '已打开系统浏览器。请在 GitHub 网页登录、输入验证码并授权；完成后回到本 App。';
-    });
-  }
-
-  Future<void> _startDeviceFlow() async {
-    if (_busy) return;
-    // 重新开始：关掉旧内嵌页，避免沿用已标记成功的控制器。
+  void _cancelCurrentFlow() {
+    _cancelled = true;
+    _flowGen++;
+    _clearSlowHint();
     if (_webviewOpen && mounted) {
       Navigator.of(context, rootNavigator: true).maybePop();
     }
     _disposeWebController();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _step = _LoginStep.idle;
+      _status = null;
+      _error = '已取消';
+      _userCode = null;
+      _verificationUri = null;
+      _activeDevice = null;
+    });
+  }
+
+  /// 关闭 Dialog ≠ 结束 Device Flow：清「已打开」锁，保留同轮码，poll 继续。
+  void _onAuthDialogClosed() {
+    debugPrint(
+      'GitHub auth: dialog closed; keep session user_code=$_userCode '
+      'webviewOpen→false',
+    );
+    // Dialog 内原生 WebView 已销毁；协调器一并丢掉，便于下次干净再开。
+    _webController?.dispose();
+    _webController = null;
+    if (!mounted) return;
+    setState(() {
+      _webviewOpen = false;
+      if (_awaitingUserAuth) {
+        _status = '授权窗口已关闭，可点「打开授权页」继续（验证码不变）';
+        _error = null;
+      }
+    });
+  }
+
+  Future<bool> _openEmbeddedAuth(String openUrl, String userCode) async {
+    if (!mounted || !githubDeviceWebViewSupported()) return false;
+    if (_webviewOpen && _webController != null) {
+      _webController!.navigationLocked = false;
+      _webController!.goToDeviceVerification(
+        userCode,
+        verificationUri: openUrl,
+      );
+      return true;
+    }
+
+    // 上次关闭后可能残留控制器：先清掉再新建，避免状态锁死。
+    if (_webController != null) {
+      _webController!.dispose();
+      _webController = null;
+    }
+
+    final controller = GitHubDeviceWebViewController(
+      initialUrl: openUrl,
+      userCode: userCode,
+      onAuthSucceeded: () {
+        if (!mounted) return;
+        setState(() {
+          _status = '授权成功，正在确认…';
+          _error = null;
+        });
+      },
+      onRetryDeviceCode: () {
+        unawaited(_startDeviceFlow());
+      },
+    );
+    _webController = controller;
+    controller.lastVerificationUri = openUrl;
+    controller.navigationLocked = false;
+    controller.phase.value = GitHubDeviceWebPhase.verifying;
+    controller.statusMessage.value = '请在下方完成授权';
+    final presented = await openGitHubDeviceAuthWebView(
+      context: context,
+      controller: controller,
+      onClosed: _onAuthDialogClosed,
+    );
+    if (mounted) {
+      setState(() {
+        _webviewOpen = presented;
+        if (presented && _awaitingUserAuth) {
+          _status = '请在窗口内完成授权';
+        }
+      });
+    }
+    debugPrint(
+      'GitHub auth: open embedded presented=$presented code=$userCode',
+    );
+    return presented;
+  }
+
+  /// 复用当前 device 会话再弹内嵌窗；无会话则重新申请设备码。
+  Future<void> _reopenAuthSurface() async {
+    if (_reopeningWeb || _webviewOpen) return;
+    _reopeningWeb = true;
+    try {
+      final session = _activeDevice;
+      var uri = session?.bestVerificationUri ?? _verificationUri;
+      var code = session?.userCode ?? _userCode;
+
+      if (uri == null || code == null) {
+        debugPrint('GitHub auth: reopen without session → request new code');
+        await _startDeviceFlow();
+        return;
+      }
+
+      debugPrint('GitHub auth: reopen same session user_code=$code');
+      if (mounted) {
+        setState(() {
+          _error = null;
+          _status = '正在打开授权页…';
+        });
+      }
+      final opened = await _openEmbeddedAuth(uri, code);
+      if (!opened && mounted) {
+        setState(() {
+          _status = '无法打开内嵌授权页，请再试或点「重新登录」';
+          _error = null;
+        });
+      }
+    } finally {
+      _reopeningWeb = false;
+    }
+  }
+
+  /// 备用：用系统浏览器打开同一次 Device Flow 验证 URL；App 继续 poll。
+  /// 尚无设备码时先申请再打开（不取消内嵌主路径能力）。
+  Future<void> _openSystemBrowserAuth() async {
+    if (_busy && !_awaitingUserAuth) return;
+
+    final session = _activeDevice;
+    final uri = session?.bestVerificationUri ?? _verificationUri;
+    if (uri != null &&
+        uri.isNotEmpty &&
+        (session != null || (_userCode != null && _userCode!.isNotEmpty))) {
+      debugPrint(
+        'GitHub auth: system browser same session '
+        'user_code=${session?.userCode ?? _userCode} url=$uri',
+      );
+      if (mounted) {
+        setState(() {
+          _error = null;
+          _status = '正在打开系统浏览器…';
+        });
+      }
+      final ok = await _oauth.openVerificationPage(uri);
+      if (!mounted) return;
+      setState(() {
+        _status = ok ? '请在系统浏览器中完成授权' : '无法打开系统浏览器';
+        _error = ok ? null : '请检查是否允许外部浏览器，或改用内嵌授权';
+      });
+      return;
+    }
+
+    debugPrint('GitHub auth: system browser without session → request code');
+    await _startDeviceFlow(openSystemBrowser: true);
+  }
+
+  Future<void> _startDeviceFlow({bool openSystemBrowser = false}) async {
+    _cancelled = true;
+    final myGen = ++_flowGen;
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    if (!mounted || myGen != _flowGen) return;
+
+    if (_webviewOpen && mounted) {
+      Navigator.of(context, rootNavigator: true).maybePop();
+    }
+    _disposeWebController();
+
     setState(() {
       _busy = true;
       _cancelled = false;
       _error = null;
-      _lastErrorNetwork = false;
       _step = _LoginStep.requestCode;
-      _status = '正在打开 GitHub 登录页，并申请设备码…';
+      _status = '正在连接…';
       _userCode = null;
       _verificationUri = null;
+      _activeDevice = null;
       _needStar = false;
       _pendingToken = null;
       _pendingLogin = null;
+      _showSlowHint = false;
     });
+    _armSlowHint();
+
     try {
       if (!GitHubOAuthConfig.isConfigured) {
         throw const GitHubOAuthException(
-          '未配置 GITHUB_CLIENT_ID。请在 GitHub 创建 OAuth App（务必启用 Device Flow），'
-          '然后填写 lib/config/github_oauth_config.dart 或使用 '
-          '--dart-define=GITHUB_CLIENT_ID=... 构建。',
+          '未配置 GitHub Client ID',
           canRetry: false,
         );
       }
 
-      // UX：先开内嵌 WebView 到登录页，用户立刻看到账号密码框；
-      // Device Flow 申请码与之并行，避免「只见失败、不见登录页」。
-      var presented = false;
-      if (mounted && githubDeviceWebViewSupported()) {
-        presented = await _ensureWebViewOpen(initialUrl: kGitHubLoginUrl);
-      }
-      if (!presented) {
-        // 内嵌不可用时立刻外开登录页，仍尽量让用户到达密码框。
-        await _oauth.openVerificationPage(kGitHubLoginUrl);
-        if (mounted) {
-          setState(() {
-            _status = '已在系统浏览器打开 GitHub 登录页；正在申请设备码…';
-          });
-        }
-      } else if (mounted) {
-        setState(() {
-          _status = '请在网页输入 GitHub 账号密码；同时正在申请设备码…';
-        });
-      }
-
+      // 本轮只申请一次；UI / WebView URL / poll 同源。
       final code = await _oauth.requestDeviceCode();
-      if (!mounted || _cancelled) return;
+      if (!mounted || _cancelled || myGen != _flowGen) return;
+      _clearSlowHint();
 
+      final openUrl = code.bestVerificationUri;
+      _activeDevice = code;
       setState(() {
         _userCode = code.userCode;
-        _verificationUri = code.bestVerificationUri;
+        _verificationUri = openUrl;
         _step = _LoginStep.awaitAuth;
-        _status =
-            '验证码已自动填入验证页。请登录（如需）并点 Authorize；完成后会自动继续。';
+        _status = '请在窗口内完成授权';
+        _error = null;
       });
 
-      // 码一到手立刻跳到带 user_code 的验证页（勿停在裸 login）。
-      _webController?.goToDeviceVerification(
-        code.userCode,
-        verificationUri: code.bestVerificationUri,
+      debugPrint(
+        'Device session gen=$myGen user_code=${code.userCode} openUrl=$openUrl',
       );
 
       final pollFuture = _oauth.pollAccessToken(
         code,
-        shouldCancel: () => _cancelled || !mounted,
+        shouldCancel: () => _cancelled || !mounted || myGen != _flowGen,
       );
 
-      // 若此前未能打开内嵌页，再试一次验证页；仍失败则外开。
-      if (!presented && mounted && githubDeviceWebViewSupported()) {
-        presented = await _ensureWebViewOpen(
-          initialUrl: code.bestVerificationUri,
-        );
-        _webController?.goToDeviceVerification(
-          code.userCode,
-          verificationUri: code.bestVerificationUri,
-        );
-        if (mounted) setState(() => _webviewOpen = presented);
-      }
-      if (!presented) {
-        await _oauth.openVerificationPage(code.bestVerificationUri);
-        if (mounted) {
+      if (openSystemBrowser) {
+        // 备用路径：同一次码用系统浏览器打开；poll 照旧。
+        final ok = await _oauth.openVerificationPage(openUrl);
+        if (myGen == _flowGen && mounted) {
           setState(() {
-            _status =
-                '已打开系统浏览器（验证码已在链接中预填）。请登录并点 Authorize；完成后回到本 App。';
+            _status = ok
+                ? '请在系统浏览器中完成授权'
+                : '无法打开系统浏览器，可点「打开授权页」用内嵌';
+            _error = ok ? null : '请检查是否允许外部浏览器';
+          });
+        }
+      } else {
+        // 主路径：内嵌 WebView；关闭后可点「打开授权页」再开，不自动跳系统浏览器。
+        final presented = await _openEmbeddedAuth(openUrl, code.userCode);
+        if (!presented && myGen == _flowGen && mounted) {
+          setState(() {
+            _status = '请点「打开授权页」在内嵌窗口完成授权';
           });
         }
       }
 
       final token = await pollFuture;
-      if (!mounted || _cancelled) return;
+      if (!mounted || _cancelled || myGen != _flowGen) return;
 
-      // 授权成功：关闭仍打开的内嵌登录页，进入 Star 检查。
       if (_webviewOpen && mounted) {
         Navigator.of(context, rootNavigator: true).maybePop();
       }
@@ -229,61 +363,62 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
 
       setState(() {
         _step = _LoginStep.checkStar;
-        _status = '授权成功，正在检查是否已 Star 仓库…';
+        _status = '正在检查 Star…';
         _error = null;
       });
       await _finishWithToken(token);
-      if (mounted && !_needStar) {
+      if (mounted && !_needStar && myGen == _flowGen) {
         setState(() => _step = _LoginStep.done);
       }
     } catch (e) {
-      if (!mounted || _cancelled) return;
+      if (!mounted || _cancelled || myGen != _flowGen) return;
+      _clearSlowHint();
       setState(() {
         _error = GitHubOAuthService.friendlyError(e);
-        _lastErrorNetwork = GitHubOAuthService.isNetworkError(e);
         _status = null;
         if (_step == _LoginStep.requestCode) {
           _step = _LoginStep.idle;
         }
       });
-      // 网络失败时仍尽量让用户到达 GitHub 登录页（WebView 可能已开；否则外开）。
-      if (_lastErrorNetwork && !_webviewOpen) {
-        await _openSystemBrowserFallback();
-      }
     } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _reopenAuthSurface() async {
-    final code = _userCode;
-    final uri = code == null
-        ? (_verificationUri ?? kGitHubLoginUrl)
-        : githubDeviceVerificationUri(
-            userCode: code,
-            baseUri: _verificationUri ?? kGitHubDeviceUrl,
-          );
-    if (_webviewOpen && _webController != null) {
-      if (code != null) {
-        _webController!.goToDeviceVerification(code, verificationUri: uri);
-      } else {
-        _webController!.navigateTo(uri, force: true);
+      _clearSlowHint();
+      if (mounted && myGen == _flowGen) {
+        setState(() => _busy = false);
       }
-      return;
-    }
-    final opened = await showGitHubDeviceAuthWebView(
-      context: context,
-      verificationUri: uri,
-      userCode: code ?? '——',
-    );
-    if (!opened) {
-      await _oauth.openVerificationPage(uri);
     }
   }
 
   Future<void> _finishWithToken(String token) async {
     final profile = await _oauth.fetchUser(token);
-    final starred = await _oauth.hasStarredRepo(token);
+
+    // Star 检查失败时仍写入 token（已授权未 Star），绝不标为可进 App
+    bool starred;
+    try {
+      starred = await _oauth.hasStarredRepo(token);
+    } catch (e) {
+      await AuthRepository.instance.loginWithGitHub(
+        accessToken: token,
+        profile: profile,
+        starred: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _needStar = true;
+        _pendingToken = token;
+        _pendingLogin = profile.login;
+        _step = _LoginStep.checkStar;
+        _status = '请 Star 后点「我已 Star」';
+        _error = GitHubOAuthService.friendlyError(e);
+      });
+      return;
+    }
+
+    await AuthRepository.instance.loginWithGitHub(
+      accessToken: token,
+      profile: profile,
+      starred: starred,
+    );
+
     if (!starred) {
       if (!mounted) return;
       setState(() {
@@ -291,42 +426,86 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         _pendingToken = token;
         _pendingLogin = profile.login;
         _step = _LoginStep.checkStar;
-        _status = '请先 Star 仓库 ${GitHubOAuthConfig.repoFullName} 后再继续';
+        _status = '请 Star 后继续';
         _error = null;
       });
       return;
     }
-    await AuthRepository.instance.loginWithGitHub(
-      accessToken: token,
-      profile: profile,
-      starred: true,
-    );
+
     if (!mounted) return;
+    setState(() {
+      _needStar = false;
+      _step = _LoginStep.done;
+      _status = null;
+      _error = null;
+    });
     if (!widget.embedded && Navigator.of(context).canPop()) {
       Navigator.of(context).pop(true);
     }
   }
 
-  Future<void> _recheckStar() async {
-    final token = _pendingToken;
-    if (token == null || _busy) return;
+  /// 本地账号进入主壳（不要求 Star；助理不可用）。
+  /// 等待 GitHub 授权时也可点：会取消本轮 poll，再 loginAsLocal。
+  Future<void> _enterAsLocal() async {
+    if (_busy && !_awaitingUserAuth) return;
+    debugPrint('GitHub auth: enter as local (cancel device flow if any)');
+    _cancelled = true;
+    _flowGen++;
+    _clearSlowHint();
+    if (_webviewOpen && mounted) {
+      Navigator.of(context, rootNavigator: true).maybePop();
+    }
+    _disposeWebController();
     setState(() {
       _busy = true;
       _error = null;
-      _step = _LoginStep.checkStar;
-      _status = '正在重新检查 Star…';
+      _status = '正在进入本地账号…';
+      _needStar = false;
+      _userCode = null;
+      _verificationUri = null;
+      _activeDevice = null;
+      _step = _LoginStep.idle;
+    });
+    try {
+      await AuthRepository.instance.loginAsLocal();
+      debugPrint('GitHub auth: loginAsLocal ok → canEnterShell='
+          '${AuthRepository.instance.canEnterShell}');
+      if (!mounted) return;
+      // embedded 门禁靠 currentUserNotifier 切到 MainShell；非 embedded 则 pop。
+      if (!widget.embedded && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop(true);
+      }
+    } catch (e, st) {
+      debugPrint('GitHub auth: loginAsLocal failed: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _error = '无法进入本地账号';
+        _status = null;
+      });
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _recheckStar() async {
+    final token =
+        _pendingToken ?? AuthRepository.instance.currentUser?.token;
+    if (token == null || token.isEmpty || _busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+      _status = '检查中…';
     });
     try {
       final starred = await _oauth.hasStarredRepo(token);
       if (!starred) {
         setState(() {
-          _error = '仍未检测到 Star。请打开仓库页面点击 Star 后重试。';
+          _error = '仍未 Star，请 Star 后再试';
           _status = null;
         });
         return;
       }
       await _finishWithToken(token);
-      if (mounted) setState(() => _step = _LoginStep.done);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -351,21 +530,21 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
           appBar: widget.embedded
               ? null
               : AppBar(
-                  title: const Text('GitHub 登录'),
+                  title: const Text('登录'),
                   backgroundColor: Colors.transparent,
                   surfaceTintColor: Colors.transparent,
                 ),
           body: SafeArea(
             child: Center(
               child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 480),
+                constraints: const BoxConstraints(maxWidth: 420),
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       if (widget.embedded) ...[
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 24),
                         Text(
                           '希比 HIBI',
                           textAlign: TextAlign.center,
@@ -373,154 +552,106 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 20),
                       ],
                       Text(
-                        '用 GitHub 账号登录',
+                        'GitHub 登录',
                         textAlign: TextAlign.center,
-                        style: theme.textTheme.titleLarge?.copyWith(
+                        style: theme.textTheme.headlineSmall?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: 8),
                       Text(
-                        '点「使用 GitHub 登录」后，会在 App 内打开 GitHub 网页；'
-                        '请在网页输入账号密码并授权。希比不会收集你的 GitHub 密码。',
+                        _needStar
+                            ? '还需 Star ${GitHubOAuthConfig.repoFullName}'
+                            : '授权后需 Star ${GitHubOAuthConfig.repoFullName}',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium?.copyWith(
                           color: cs.onSurfaceVariant,
-                          height: 1.35,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '登录一次后，授权信息会保存在本机；升级 App 一般无需再输入密码'
-                        '（除非授权过期、你撤销了授权，或取消了仓库 Star）。',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          height: 1.35,
+                      const SizedBox(height: 28),
+                      if (!_needStar) ...[
+                        _StepStrip(
+                          step: _step,
+                          needStar: _step == _LoginStep.checkStar,
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '仓库：${GitHubOAuthConfig.repoFullName}（需 Star 后才能使用）',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.labelLarge,
-                      ),
-                      const SizedBox(height: 20),
-                      _StepStrip(step: _step, needStar: _needStar || _step == _LoginStep.checkStar),
-                      const SizedBox(height: 20),
-                      if (_userCode != null) ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            vertical: 16,
-                            horizontal: 12,
+                        const SizedBox(height: 24),
+                      ],
+                      if (_userCode != null && !_needStar) ...[
+                        SelectableText(
+                          _userCode!,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.displaySmall?.copyWith(
+                            letterSpacing: 4,
+                            fontWeight: FontWeight.bold,
                           ),
-                          decoration: BoxDecoration(
-                            color: cs.surfaceContainerHighest.withOpacity(0.55),
-                            borderRadius: BorderRadius.circular(12),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '网页未预填时可复制粘贴',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onSurfaceVariant,
                           ),
-                          child: Column(
-                            children: [
-                              Text('设备验证码', style: theme.textTheme.titleSmall),
-                              const SizedBox(height: 8),
-                              SelectableText(
-                                _userCode!,
-                                textAlign: TextAlign.center,
-                                style: theme.textTheme.displaySmall?.copyWith(
-                                  letterSpacing: 4,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                '用于把本次网页授权绑定到本 App；一般已自动填入，无需手抄。'
-                                '若网页未预填，可点下方复制后粘贴。',
-                                textAlign: TextAlign.center,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: cs.onSurfaceVariant,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              Wrap(
-                                alignment: WrapAlignment.center,
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  OutlinedButton.icon(
-                                    onPressed: () async {
-                                      await Clipboard.setData(
-                                        ClipboardData(text: _userCode!),
-                                      );
-                                      if (!context.mounted) return;
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(content: Text('验证码已复制')),
-                                      );
-                                    },
-                                    icon: const Icon(Icons.copy, size: 18),
-                                    label: const Text('复制验证码'),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            TextButton.icon(
+                              onPressed: () async {
+                                final text = formatGitHubUserCode(_userCode);
+                                await Clipboard.setData(
+                                  ClipboardData(text: text),
+                                );
+                                if (!context.mounted) return;
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('已复制 $text'),
+                                    duration: const Duration(milliseconds: 1600),
                                   ),
-                                  OutlinedButton.icon(
-                                    onPressed: _verificationUri == null
-                                        ? null
-                                        : _reopenAuthSurface,
-                                    icon: const Icon(Icons.web, size: 18),
-                                    label: const Text('打开登录页'),
-                                  ),
-                                  OutlinedButton.icon(
-                                    onPressed: _verificationUri == null
-                                        ? null
-                                        : () => _oauth.openVerificationPage(
-                                              _verificationUri!,
-                                            ),
-                                    icon: const Icon(Icons.open_in_browser, size: 18),
-                                    label: const Text('系统浏览器'),
-                                  ),
-                                ],
+                                );
+                              },
+                              icon: const Icon(Icons.copy, size: 16),
+                              label: const Text('复制'),
+                            ),
+                            TextButton(
+                              onPressed: _canOpenAuthPage
+                                  ? _reopenAuthSurface
+                                  : null,
+                              child: Text(
+                                _webviewOpen ? '授权页已打开' : '打开授权页',
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 16),
                       ],
                       if (_needStar) ...[
-                        Card(
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Text(
-                                  '还需 Star 仓库',
-                                  style: theme.textTheme.titleMedium,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  _pendingLogin == null
-                                      ? '请为 ${GitHubOAuthConfig.repoFullName} 点 Star，然后点「我已 Star」。'
-                                      : '账号 @$_pendingLogin 尚未 Star '
-                                          '${GitHubOAuthConfig.repoFullName}。\n'
-                                          '未 Star 无法使用本应用。',
-                                  style: theme.textTheme.bodyMedium,
-                                ),
-                                const SizedBox(height: 12),
-                                FilledButton.tonalIcon(
-                                  onPressed: _busy
-                                      ? null
-                                      : () => _oauth.openRepoForStar(),
-                                  icon: const Icon(Icons.star_border),
-                                  label: const Text('打开仓库去 Star'),
-                                ),
-                                const SizedBox(height: 8),
-                                FilledButton.icon(
-                                  onPressed: _busy ? null : _recheckStar,
-                                  icon: const Icon(Icons.refresh),
-                                  label: const Text('我已 Star，重新检查'),
-                                ),
-                              ],
-                            ),
-                          ),
+                        Text(
+                          _pendingLogin == null
+                              ? '请先 Star 仓库'
+                              : '@$_pendingLogin 尚未 Star',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 12),
+                        FilledButton.tonal(
+                          onPressed:
+                              _busy ? null : () => _oauth.openRepoForStar(),
+                          child: const Text('去 Star'),
+                        ),
+                        const SizedBox(height: 8),
+                        FilledButton(
+                          onPressed: _busy ? null : _recheckStar,
+                          child: const Text('我已 Star'),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: _busy ? null : _startDeviceFlow,
+                          child: const Text('换账号登录'),
                         ),
                         const SizedBox(height: 16),
                       ],
@@ -538,67 +669,76 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                       if (_error != null)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 12),
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              color: cs.errorContainer.withOpacity(0.55),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              _error!,
-                              textAlign: TextAlign.center,
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: cs.onErrorContainer,
-                              ),
+                          child: Text(
+                            _error!,
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: cs.error,
                             ),
                           ),
                         ),
-                      if (_busy)
+                      if (_busy && _step == _LoginStep.requestCode) ...[
                         const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 16),
+                          padding: EdgeInsets.symmetric(vertical: 12),
                           child: Center(child: CircularProgressIndicator()),
                         ),
-                      if (!_needStar)
-                        FilledButton.icon(
-                          onPressed: _busy ? null : _startDeviceFlow,
-                          icon: const Icon(Icons.login),
-                          label: Text(
-                            _userCode == null
-                                ? '使用 GitHub 登录'
-                                : (_error != null ? '重试登录' : '重新开始登录'),
+                        if (_showSlowHint) ...[
+                          Text(
+                            '连接较慢，可取消后重试',
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: cs.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton(
+                            onPressed: _cancelCurrentFlow,
+                            child: const Text('取消'),
+                          ),
+                        ],
+                      ] else if (_busy &&
+                          _step != _LoginStep.awaitAuth &&
+                          !_awaitingUserAuth)
+                        // 等待用户授权时不转圈卡死：关掉 WebView 后应能点「打开授权页」。
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: Center(child: CircularProgressIndicator()),
+                        ),
+                      // 初始页（连接）与后续步骤共用：系统浏览器始终夹在
+                      // 「使用 GitHub 登录」与「本地账号进入」之间，不依赖已有设备码。
+                      if (!_needStar) ...[
+                        FilledButton(
+                          onPressed: (_busy && !_awaitingUserAuth)
+                              ? null
+                              : _startDeviceFlow,
+                          child: Text(
+                            _error != null
+                                ? '重试'
+                                : (_userCode == null
+                                    ? '使用 GitHub 登录'
+                                    : '重新登录'),
                           ),
                         ),
-                      if (_error != null && !_needStar) ...[
-                        const SizedBox(height: 8),
-                        OutlinedButton.icon(
-                          onPressed: _busy ? null : _openSystemBrowserFallback,
-                          icon: const Icon(Icons.open_in_browser),
-                          label: const Text('在系统浏览器打开 GitHub'),
+                        const SizedBox(height: 10),
+                        OutlinedButton(
+                          onPressed: _canOpenSystemBrowser
+                              ? _openSystemBrowserAuth
+                              : null,
+                          child: const Text('用系统浏览器登录'),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 10),
+                        OutlinedButton(
+                          onPressed: _canEnterLocal ? _enterAsLocal : null,
+                          child: const Text('本地账号进入'),
+                        ),
                         Text(
-                          _lastErrorNetwork
-                              ? '提示：需能访问 github.com / api.github.com。'
-                                  '出现超时或 semaphore timeout 时，请检查代理/VPN，'
-                                  '或先用上方按钮在系统浏览器打开登录页。'
-                              : '提示：登录需能访问 github.com。若长期失败，请检查网络或 OAuth App 是否启用 Device Flow。',
+                          '本地可用思维/日程等；助理需 GitHub',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: cs.onSurfaceVariant,
                           ),
                         ),
                       ],
-                      const SizedBox(height: 16),
-                      Text(
-                        '正确流程：点登录 → 在 App 内（或系统浏览器）打开的 GitHub 网页输入账号密码并授权 → '
-                        '回到希比继续 → Star 仓库后即可使用。\n'
-                        '本应用无自建账号服务器：身份即你的 GitHub 账号；数据默认保存在本机。',
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onSurfaceVariant,
-                          height: 1.4,
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -633,9 +773,8 @@ class _StepStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final labels = ['申请设备码', '网页授权', needStar ? '检查 Star' : '检查 Star'];
+    final cs = Theme.of(context).colorScheme;
+    final labels = ['连接', '授权', needStar ? 'Star' : '完成'];
     final active = _activeIndex;
 
     return Row(
@@ -711,9 +850,12 @@ class _StepChip extends StatelessWidget {
         Text(
           label,
           style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: state == _ChipState.active ? cs.primary : cs.onSurfaceVariant,
-                fontWeight:
-                    state == _ChipState.active ? FontWeight.w700 : FontWeight.w500,
+                color: state == _ChipState.active
+                    ? cs.primary
+                    : cs.onSurfaceVariant,
+                fontWeight: state == _ChipState.active
+                    ? FontWeight.w700
+                    : FontWeight.w500,
               ),
         ),
       ],

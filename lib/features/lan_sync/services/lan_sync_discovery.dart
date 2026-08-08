@@ -10,16 +10,22 @@ class LanSyncPeer {
     required this.deviceId,
     required this.deviceName,
     required this.accountHint,
+    required this.accountId,
     required this.ip,
     required this.httpPort,
     required this.lastSeen,
+    this.protocolVersion,
   });
 
   final String deviceId;
   final String deviceName;
   final String accountHint;
+
+  /// 稳定账号键：GitHub login（小写）或 userId；空表示旧端/未登录。
+  final String accountId;
   final String ip;
   final int httpPort;
+  final int? protocolVersion;
   DateTime lastSeen;
 
   String get displayLabel {
@@ -35,18 +41,22 @@ class LanSyncDiscovery {
     required this.deviceId,
     required this.deviceName,
     required this.accountHint,
+    required this.accountId,
     required this.httpPort,
   });
 
   final String deviceId;
   final String deviceName;
   final String accountHint;
+  final String accountId;
   final int httpPort;
 
   static const int discoveryPort = 62747;
   static const List<int> discoveryPortFallbacks = [62747, 62748, 62749];
   static const String protocolName = 'hibi-lan-sync';
-  static const int protocolVersion = 1;
+
+  /// v2：广播增加稳定 [accountId]，用于连接前账号一致性校验。
+  static const int protocolVersion = 2;
 
   final List<RawDatagramSocket> _sockets = [];
   Timer? _broadcastTimer;
@@ -161,6 +171,7 @@ class LanSyncDiscovery {
       'deviceId': deviceId,
       'deviceName': deviceName,
       'accountHint': accountHint,
+      'accountId': accountId,
       'httpPort': httpPort,
     }));
     for (final socket in _sockets) {
@@ -190,14 +201,28 @@ class LanSyncDiscovery {
       if (id.isEmpty || id == deviceId) return;
       final name = data['deviceName']?.toString() ?? '希比设备';
       final hint = data['accountHint']?.toString() ?? '';
+      final accountId = (data['accountId']?.toString() ?? '').trim();
       final port = (data['httpPort'] is num)
           ? (data['httpPort'] as num).toInt()
           : int.tryParse('${data['httpPort']}') ?? 0;
       if (port <= 0) return;
       final ip = dg.address.address;
+      final proto = (data['v'] is num)
+          ? (data['v'] as num).toInt()
+          : int.tryParse('${data['v']}');
       final existing = _peers[id];
       if (existing != null) {
         existing.lastSeen = DateTime.now();
+        _peers[id] = LanSyncPeer(
+          deviceId: id,
+          deviceName: name,
+          accountHint: hint,
+          accountId: accountId,
+          ip: ip,
+          httpPort: port,
+          lastSeen: existing.lastSeen,
+          protocolVersion: proto,
+        );
         _peersController.add(currentPeers);
         return;
       }
@@ -205,9 +230,11 @@ class LanSyncDiscovery {
         deviceId: id,
         deviceName: name,
         accountHint: hint,
+        accountId: accountId,
         ip: ip,
         httpPort: port,
         lastSeen: DateTime.now(),
+        protocolVersion: proto,
       );
       _peersController.add(currentPeers);
     } catch (_) {}

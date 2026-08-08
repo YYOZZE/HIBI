@@ -63,7 +63,8 @@ class _InitialAppLoaderState extends State<InitialAppLoader> {
   }
 }
 
-/// 未登录 / 未 Star 时展示 GitHub 登录页；通过后进入主壳。
+/// 门禁：仅 [AuthRepository.canEnterShell] 进主壳（本地账号或 GitHub+Star）；
+/// 未登录 / GitHub 未 Star 一律展示登录页（永不白屏）。
 /// 回到前台时复检 Star，取消 Star 后再次拦截。
 class _GitHubAuthGate extends StatefulWidget {
   const _GitHubAuthGate();
@@ -89,8 +90,9 @@ class _GitHubAuthGateState extends State<_GitHubAuthGate>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      final u = AuthRepository.instance.currentUser;
-      if (u != null && u.isGitHub) {
+      final access = AuthRepository.instance.accessState;
+      if (access == AppAccessState.githubOk ||
+          access == AppAccessState.githubNeedStar) {
         unawaited(AuthRepository.instance.refreshGitHubStarStatus());
       }
     }
@@ -101,11 +103,11 @@ class _GitHubAuthGateState extends State<_GitHubAuthGate>
     final auth = AuthRepository.instance;
     return ValueListenableBuilder<AuthUser?>(
       valueListenable: auth.currentUserNotifier,
-      builder: (context, user, _) {
+      builder: (context, _, __) {
         return ValueListenableBuilder<bool>(
           valueListenable: auth.githubAccessGrantedNotifier,
-          builder: (context, starred, _) {
-            if (user != null && user.isGitHub && starred) {
+          builder: (context, __, ___) {
+            if (auth.canEnterShell) {
               return const MainShell();
             }
             return const GitHubLoginPage(embedded: true);

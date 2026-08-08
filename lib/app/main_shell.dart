@@ -9,6 +9,8 @@ import 'theme_policy_service.dart';
 import 'frosted_background.dart';
 
 import '../features/assistant/assistant_page.dart';
+import '../features/auth/services/auth_repository.dart';
+import '../features/auth/services/local_account_import_service.dart';
 import '../features/auth/services/user_sync_scheduler.dart';
 import '../features/mind/mind_page.dart';
 import '../features/profile/profile_page.dart';
@@ -34,13 +36,27 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     ScheduleReminderService.instance.alertNotifier.addListener(_onReminderAlert);
+    // GitHub+Star 进壳后：其他账号目录有未合并数据则弹一次导入决策
+    AuthRepository.instance.currentUserNotifier.addListener(_maybePromptImport);
+    AuthRepository.instance.githubAccessGrantedNotifier
+        .addListener(_maybePromptImport);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybePromptImport());
   }
 
   @override
   void dispose() {
+    AuthRepository.instance.currentUserNotifier
+        .removeListener(_maybePromptImport);
+    AuthRepository.instance.githubAccessGrantedNotifier
+        .removeListener(_maybePromptImport);
     ScheduleReminderService.instance.alertNotifier.removeListener(_onReminderAlert);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  void _maybePromptImport() {
+    if (!mounted) return;
+    unawaited(LocalAccountImportService.maybeShowPrompt(context));
   }
 
   @override

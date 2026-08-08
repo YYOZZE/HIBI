@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_glass_styles.dart';
 import '../../config/api_config.dart';
-import '../auth/login_page.dart';
+import '../auth/github_login_page.dart';
 import '../auth/models/auth_user.dart';
 import '../auth/services/auth_repository.dart';
 import '../auth/services/user_sync_scheduler.dart';
@@ -289,6 +289,18 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   void _openChat(Agent agent) {
+    if (!AuthRepository.instance.canUseAssistant) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            AuthRepository.instance.accessState == AppAccessState.local
+                ? '本地账号无法使用助理'
+                : '请先用 GitHub 登录',
+          ),
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (ctx) => AgentChatPage(
@@ -303,21 +315,30 @@ class _AssistantPageState extends State<AssistantPage> {
 
   @override
   Widget build(BuildContext context) {
+    final auth = AuthRepository.instance;
     return ValueListenableBuilder<AuthUser?>(
-      valueListenable: AuthRepository.instance.currentUserNotifier,
+      valueListenable: auth.currentUserNotifier,
       builder: (context, user, _) {
-        if (user == null) {
-          return _buildLoginRequired(context);
-        }
-        return _buildAssistantContent(context);
+        return ValueListenableBuilder<bool>(
+          valueListenable: auth.githubAccessGrantedNotifier,
+          builder: (context, starred, _) {
+            // 助理仅 GitHub + Star；本地账号可进主壳但不可用助理
+            if (!auth.canUseAssistant) {
+              return _buildLoginRequired(context);
+            }
+            return _buildAssistantContent(context);
+          },
+        );
       },
     );
   }
 
-  /// 未登录时显示：仅登录用户可使用助理
+  /// 本地账号 / 未 GitHub+Star：不进入可聊天界面。
   Widget _buildLoginRequired(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isLocal =
+        AuthRepository.instance.accessState == AppAccessState.local;
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
@@ -326,7 +347,6 @@ class _AssistantPageState extends State<AssistantPage> {
         elevation: 0,
         scrolledUnderElevation: 0,
         title: const Text('助理'),
-        actions: [_buildSubscribeMiniButton(context)],
       ),
       body: Center(
         child: Padding(
@@ -334,31 +354,36 @@ class _AssistantPageState extends State<AssistantPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.smart_toy_outlined,
-                  size: 64, color: colorScheme.outline),
+              Icon(Icons.lock_outline, size: 56, color: colorScheme.outline),
+              const SizedBox(height: 16),
+              Text(
+                isLocal ? '本地账号无法使用助理' : '需要登录后才能体验完整功能',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colorScheme.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              if (isLocal) ...[
+                const SizedBox(height: 8),
+                Text(
+                  '请使用 GitHub 登录',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
               const SizedBox(height: 20),
-              Text(
-                '请使用 GitHub 登录后使用助理',
-                style: theme.textTheme.titleLarge
-                    ?.copyWith(color: colorScheme.onSurface),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '需 GitHub 账号登录并 Star 本仓库后，方可使用智能体与对话。',
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: colorScheme.onSurfaceVariant),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
+              FilledButton(
                 onPressed: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const LoginPage()),
+                    MaterialPageRoute<void>(
+                      builder: (_) => const GitHubLoginPage(),
+                    ),
                   );
                 },
-                icon: const Icon(Icons.login),
-                label: const Text('GitHub 登录'),
+                child: Text(isLocal ? '用 GitHub 登录' : '去登录'),
               ),
             ],
           ),

@@ -20,17 +20,32 @@ const String _keyAvatarUrl = 'hibi_auth_avatar_url';
 const String _keyGithubLogin = 'hibi_auth_github_login';
 const String _keyAuthProvider = 'hibi_auth_provider';
 const String _keyStarred = 'hibi_github_starred';
+/// 本机稳定 local id（重装前不变；用于局域网握手）。
+const String _keyLocalAccountId = 'hibi_local_account_id';
 
 /// 会话快照（不含密码；token 与 prefs/secure 双写，升级后可恢复）。
 const String _keySessionJson = 'hibi_github_session_v1';
 
+/// App 访问状态机。
+///
+/// - [notLoggedIn]：无会话
+/// - [local]：本地账号 → 可进主壳，助理关闭，不要求 Star
+/// - [githubNeedStar]：GitHub 已授权未 Star → 不进主壳，引导 Star
+/// - [githubOk]：GitHub + Star 204 → 可进主壳，助理开放
+enum AppAccessState {
+  notLoggedIn,
+  local,
+  githubNeedStar,
+  githubOk,
+}
+
 /// 账户状态与持久化：单例，应用内唯一。
-/// 3.3.8+ 门禁以 GitHub OAuth + Star 为准；旧版手机号/Mock 不再视为有效登录。
+/// 支持本地账号与 GitHub（+ Star）两条路径。
 ///
 /// **持久化策略（绝不存 GitHub 密码）**：
-/// - `access_token` → `flutter_secure_storage` + SharedPreferences 备份
+/// - GitHub `access_token` → `flutter_secure_storage` + SharedPreferences 备份
+/// - 本地会话 → SharedPreferences（`local_<稳定id>`）
 /// - 用户资料 / Star 缓存 → SharedPreferences（含 JSON 快照）
-/// - 冷启动：有有效 token 且 Star 缓存/复检通过 → 直接进主界面
 class AuthRepository {
   AuthRepository._() {
     _loadFuture = _loadFromPrefs();
@@ -44,14 +59,30 @@ class AuthRepository {
 
   final ValueNotifier<AuthUser?> currentUserNotifier = ValueNotifier<AuthUser?>(null);
 
-  /// 已通过 GitHub Star 校验时可进入主壳。
+  /// GitHub Star 是否通过（仅 GitHub 路径有意义；本地账号恒为 false）。
   final ValueNotifier<bool> githubAccessGrantedNotifier = ValueNotifier<bool>(false);
 
   AuthUser? get currentUser => currentUserNotifier.value;
 
-  bool get canEnterApp {
+  /// 是否可进主壳（本地 或 GitHub+Star）。
+  bool get canEnterShell =>
+      accessState == AppAccessState.local ||
+      accessState == AppAccessState.githubOk;
+
+  /// 是否可使用助理（仅 GitHub + Star）。
+  bool get canUseAssistant => accessState == AppAccessState.githubOk;
+
+  /// 兼容旧调用：曾表示「GitHub 会话可进 App」；现等同 [canUseAssistant]。
+  bool get canEnterApp => canUseAssistant;
+
+  /// 门禁状态机。
+  AppAccessState get accessState {
     final u = currentUser;
-    return u != null && u.isGitHub && githubAccessGrantedNotifier.value;
+    if (u == null || u.token.isEmpty) return AppAccessState.notLoggedIn;
+    if (u.isLocal) return AppAccessState.local;
+    if (!u.isGitHub) return AppAccessState.notLoggedIn;
+    if (githubAccessGrantedNotifier.value) return AppAccessState.githubOk;
+    return AppAccessState.githubNeedStar;
   }
 
   AuthApi? _api;
@@ -83,14 +114,6 @@ class AuthRepository {
       return;
     }
 
-    // 双侧补齐，降低「升级后只丢一边」导致的重登。
-    if (prefsToken != token) {
-      await prefs.setString(_keyToken, token);
-    }
-    if (secureToken != token) {
-      await GitHubOAuthService.instance.saveTokenSecurely(token);
-    }
-
     var userId = prefs.getString(_keyUserId) ?? '';
     var phoneOrEmail = prefs.getString(_keyPhoneOrEmail) ?? '';
     var nickname = prefs.getString(_keyNickname);
@@ -114,9 +137,46 @@ class AuthRepository {
       if (githubLogin == null || githubLogin.isEmpty) {
         githubLogin = snap['githubLogin']?.toString();
       }
-      if (provider == 'legacy' && snap['authProvider']?.toString() == 'github') {
-        provider = 'github';
+      final snapProvider = snap['authProvider']?.toString();
+      if (provider == 'legacy' &&
+          (snapProvider == 'github' || snapProvider == 'local')) {
+        provider = snapProvider!;
       }
+    }
+
+    // —— 本地账号路径：进主壳，不要求 Star ——
+    if (provider == 'local' ||
+        token.startsWith('local_') ||
+        phoneOrEmail.startsWith('local:')) {
+      final localId = (userId.isNotEmpty
+              ? userId
+              : await _ensureStableLocalId(prefs))
+          .trim();
+      final user = AuthUser(
+        userId: localId,
+        phoneOrEmail: 'local:$localId',
+        nickname: (nickname == null || nickname.isEmpty) ? '本地账号' : nickname,
+        avatarUrl: avatarUrl,
+        token: token.startsWith('local_') ? token : 'local_$localId',
+        authProvider: 'local',
+      );
+      githubAccessGrantedNotifier.value = false;
+      currentUserNotifier.value = user;
+      AccountStoragePaths.setActiveUser(user);
+      await prefs.setString(_keyToken, user.token);
+      await prefs.setString(_keyUserId, user.userId);
+      await prefs.setString(_keyAuthProvider, 'local');
+      await _writeSessionSnapshot(user, starred: false);
+      await reloadStoresAfterAccountSwitch();
+      return;
+    }
+
+    // 双侧补齐（仅 GitHub token）
+    if (prefsToken != token) {
+      await prefs.setString(_keyToken, token);
+    }
+    if (secureToken != token) {
+      await GitHubOAuthService.instance.saveTokenSecurely(token);
     }
 
     if ((githubLogin != null && githubLogin.isNotEmpty) ||
@@ -178,7 +238,7 @@ class AuthRepository {
           );
         }
       } else {
-        // 旧版非 GitHub 登录不再放行
+        // 旧版非 GitHub / 非本地登录不再放行
         await _invalidateLocalSession();
         return;
       }
@@ -191,28 +251,64 @@ class AuthRepository {
 
     currentUserNotifier.value = user;
     AccountStoragePaths.setActiveUser(user);
-    await reloadStoresAfterAccountSwitch();
 
-    // 3) Star：先用本地缓存放行（升级/弱网不挡），再后台复检
+    // 3) Star：默认不放行；API 确认 204 才可进 App。
+    // 弱网复检失败时才回退本地缓存（升级离线不白屏卡死）。
     final cachedStar = prefs.getBool(_keyStarred) ??
         (snap?['starred'] == true);
-    githubAccessGrantedNotifier.value = cachedStar;
+    githubAccessGrantedNotifier.value = false;
 
+    var starred = false;
     try {
-      final starred =
-          await GitHubOAuthService.instance.hasStarredRepo(token);
-      githubAccessGrantedNotifier.value = starred;
+      starred = await GitHubOAuthService.instance.hasStarredRepo(token);
       await prefs.setBool(_keyStarred, starred);
       await _writeSessionSnapshot(user, starred: starred);
-      // 未 Star：保留登录态，门禁页只引导 Star，不要求重新输密码
+      // 未 Star：保留 token，门禁页引导 Star，绝不进主壳
     } on GitHubUnauthorizedException {
       await _invalidateLocalSession();
+      return;
     } catch (e) {
       debugPrint('启动 Star 复检失败（沿用缓存 $cachedStar）: $e');
-      if (!cachedStar) {
-        githubAccessGrantedNotifier.value = false;
-      }
+      starred = cachedStar;
     }
+
+    // local → 当前 GitHub 的可选导入由主壳弹窗处理，此处不静默全合并
+    await reloadStoresAfterAccountSwitch();
+    githubAccessGrantedNotifier.value = starred;
+  }
+
+  Future<String> _ensureStableLocalId(SharedPreferences prefs) async {
+    var id = prefs.getString(_keyLocalAccountId)?.trim();
+    if (id != null && id.isNotEmpty) return id;
+    id =
+        'local_${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
+    await prefs.setString(_keyLocalAccountId, id);
+    return id;
+  }
+
+  /// 本机账号进入：可用思维/日程/传输；助理不可用；不要求 Star。
+  Future<AuthUser> loginAsLocal({String? nickname}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final localId = await _ensureStableLocalId(prefs);
+    final user = AuthUser(
+      userId: localId,
+      phoneOrEmail: 'local:$localId',
+      nickname: (nickname == null || nickname.trim().isEmpty)
+          ? '本地账号'
+          : nickname.trim(),
+      token: 'local_$localId',
+      authProvider: 'local',
+    );
+    githubAccessGrantedNotifier.value = false;
+    await prefs.setBool(_keyStarred, false);
+    await prefs.remove(_keyGithubLogin);
+    await _saveToPrefs(user);
+    // 本地 token 勿写入 GitHub secure 槽
+    await GitHubOAuthService.instance.clearTokenSecurely();
+    currentUserNotifier.value = user;
+    AccountStoragePaths.setActiveUser(user);
+    await reloadStoresAfterAccountSwitch();
+    return user;
   }
 
   Future<void> _saveToPrefs(AuthUser user) async {
@@ -229,6 +325,8 @@ class AuthRepository {
       final starred = prefs.getBool(_keyStarred) ??
           githubAccessGrantedNotifier.value;
       await _writeSessionSnapshot(user, starred: starred);
+    } else if (user.isLocal) {
+      await _writeSessionSnapshot(user, starred: false);
     }
   }
 
@@ -290,7 +388,8 @@ class AuthRepository {
     AccountStoragePaths.setActiveUser(null);
   }
 
-  /// GitHub Device Flow 成功且已 Star 后写入本地。
+  /// 写入 GitHub 会话。`starred == true` 才算登录成功、可进主壳；
+  /// `starred == false` 仅保留 token（已授权未 Star），不放行。
   Future<AuthUser> loginWithGitHub({
     required String accessToken,
     required GitHubUserProfile profile,
@@ -307,13 +406,15 @@ class AuthRepository {
       githubLogin: profile.login,
       authProvider: 'github',
     );
+    // 先关放行，再写会话，避免短暂闪进主壳
+    githubAccessGrantedNotifier.value = false;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyStarred, starred);
     await _saveToPrefs(user);
     currentUserNotifier.value = user;
-    githubAccessGrantedNotifier.value = starred;
     AccountStoragePaths.setActiveUser(user);
     await reloadStoresAfterAccountSwitch();
+    githubAccessGrantedNotifier.value = starred;
     return user;
   }
 
@@ -325,12 +426,17 @@ class AuthRepository {
       githubAccessGrantedNotifier.value = false;
       return false;
     }
+    final wasGranted = githubAccessGrantedNotifier.value;
     try {
       final starred =
           await GitHubOAuthService.instance.hasStarredRepo(u.token);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_keyStarred, starred);
       await _writeSessionSnapshot(u, starred: starred);
+      if (!wasGranted && starred) {
+        AccountStoragePaths.setActiveUser(u);
+        await reloadStoresAfterAccountSwitch();
+      }
       githubAccessGrantedNotifier.value = starred;
       return starred;
     } on GitHubUnauthorizedException {
@@ -372,26 +478,32 @@ class AuthRepository {
   }
 
   Future<void> logout() async {
-    final token = currentUser?.token;
-    if (ApiConfig.isAuthApiConfigured &&
+    final user = currentUser;
+    final token = user?.token;
+    // 本地 / GitHub 会话不走自建 auth API；先清会话，保证门禁立刻回到登录页。
+    final mayRemoteLogout = user != null &&
+        !user.isLocal &&
+        !user.isGitHub &&
         token != null &&
-        !token.startsWith('mock_') &&
-        currentUser?.isGitHub != true) {
+        !token.startsWith('mock_');
+
+    UserSyncScheduler.cancelPendingPush();
+    await _invalidateLocalSession();
+    try {
+      await reloadStoresAfterAccountSwitch();
+    } catch (_) {}
+
+    if (!mayRemoteLogout) return;
+    if (ApiConfig.isAuthApiConfigured) {
       try {
         await UserSyncService(baseUrl: ApiConfig.authApiBaseUrl).push(token);
       } catch (_) {}
     }
-    if (_api != null && token != null && currentUser?.isGitHub != true) {
+    if (_api != null) {
       try {
         await _api!.logout(token);
       } catch (_) {}
     }
-    UserSyncScheduler.cancelPendingPush();
-    AccountStoragePaths.setActiveUser(null);
-    try {
-      await reloadStoresAfterAccountSwitch();
-    } catch (_) {}
-    await _invalidateLocalSession();
   }
 
   Future<AuthUser?> updateProfile({

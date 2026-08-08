@@ -16,19 +16,24 @@ class AccountStoragePaths {
   static String _activeKey = localKey;
   static String get activeKey => _activeKey;
 
-  /// 供 AuthRepository 在恢复/登录/登出后调用，切换活动目录
+  /// 供 AuthRepository 在恢复/登录/登出后调用，切换活动目录。
+  /// 本地账号固定使用 `hibi_accounts/local/`，GitHub 用 sanitize(userId)。
   static void setActiveUser(AuthUser? user) {
     if (user == null || user.userId.isEmpty) {
       _activeKey = localKey;
       return;
     }
-    _activeKey = _sanitize(user.userId);
+    if (user.isLocal) {
+      _activeKey = localKey;
+      return;
+    }
+    _activeKey = sanitizeKey(user.userId);
   }
 
-  static String _sanitize(String id) {
+  /// 账号目录名：去掉非法路径字符，过长截断。
+  static String sanitizeKey(String id) {
     final s = id.replaceAll(RegExp(r'[/\\:*?"<>|]'), '_').trim();
     if (s.isEmpty) return localKey;
-    // 避免路径过长
     return s.length > 80 ? s.substring(0, 80) : s;
   }
 
@@ -39,39 +44,73 @@ class AccountStoragePaths {
     return root;
   }
 
-  /// 当前账号的数据根目录（已 ensure 存在）
-  static Future<Directory> currentAccountDir() async {
+  /// `Documents/hibi_accounts/` 根目录。
+  static Future<Directory> accountsRoot() => _accountsRoot();
+
+  /// 列出本机已有账号目录键。
+  static Future<List<String>> listAccountKeys() async {
     final root = await _accountsRoot();
-    final sub = Directory('${root.path}/$_activeKey');
+    if (!await root.exists()) return const [];
+    final keys = <String>[];
+    await for (final ent in root.list()) {
+      if (ent is! Directory) continue;
+      final name = ent.path.replaceAll('\\', '/').split('/').last;
+      if (name.isNotEmpty) keys.add(name);
+    }
+    keys.sort();
+    return keys;
+  }
+
+  /// 按磁盘上的目录名打开（不二次 sanitize），用于 [listAccountKeys] 枚举结果。
+  static Future<Directory> accountDirExact(String dirName) async {
+    final root = await _accountsRoot();
+    return Directory('${root.path}/$dirName');
+  }
+
+  /// 指定账号键的数据根目录（已 ensure 存在；键会 sanitize）
+  static Future<Directory> accountDirForKey(String key) async {
+    final root = await _accountsRoot();
+    final safe = key.isEmpty ? localKey : sanitizeKey(key);
+    final sub = Directory('${root.path}/$safe');
     if (!await sub.exists()) await sub.create(recursive: true);
     return sub;
   }
 
-  static Future<File> mindNodesFile() async {
-    final dir = await currentAccountDir();
+  /// 当前账号的数据根目录（已 ensure 存在）
+  static Future<Directory> currentAccountDir() => accountDirForKey(_activeKey);
+
+  static Future<File> mindNodesFileForKey(String key) async {
+    final dir = await accountDirForKey(key);
     return File('${dir.path}/hibi_mind_nodes.json');
   }
 
-  static Future<File> scheduleEventsFile() async {
-    final dir = await currentAccountDir();
+  static Future<File> scheduleEventsFileForKey(String key) async {
+    final dir = await accountDirForKey(key);
     return File('${dir.path}/hibi_schedule_events.json');
   }
 
-  static Future<Directory> assistantDir() async {
-    final dir = await currentAccountDir();
+  static Future<Directory> assistantDirForKey(String key) async {
+    final dir = await accountDirForKey(key);
     final sub = Directory('${dir.path}/hibi_assistant');
     if (!await sub.exists()) await sub.create(recursive: true);
     return sub;
   }
 
-  /// 将旧版根目录下的文件迁移到 local，仅当 local 下对应文件不存在时执行一次
+  static Future<File> mindNodesFile() => mindNodesFileForKey(_activeKey);
+
+  static Future<File> scheduleEventsFile() =>
+      scheduleEventsFileForKey(_activeKey);
+
+  static Future<Directory> assistantDir() => assistantDirForKey(_activeKey);
+
+  /// 将旧版根目录下的文件迁移到 `hibi_accounts/local/`，仅当 local 下对应文件不存在时执行。
+  /// 与当前活动账号无关，便于 GitHub 登录后仍能发现可导入的本地数据。
   static Future<void> migrateLegacyIntoLocalIfNeeded() async {
-    if (_activeKey != localKey) return;
     final dir = await getApplicationDocumentsDirectory();
     final rootMind = File('${dir.path}/hibi_mind_nodes.json');
     final rootSchedule = File('${dir.path}/hibi_schedule_events.json');
     final rootAssistant = Directory('${dir.path}/hibi_assistant');
-    final localDir = await currentAccountDir();
+    final localDir = await accountDirForKey(localKey);
 
     Future<void> copyIfMissing(File src, File dst) async {
       if (!await src.exists() || await dst.exists()) return;
@@ -81,7 +120,8 @@ class AccountStoragePaths {
     }
 
     await copyIfMissing(rootMind, File('${localDir.path}/hibi_mind_nodes.json'));
-    await copyIfMissing(rootSchedule, File('${localDir.path}/hibi_schedule_events.json'));
+    await copyIfMissing(
+        rootSchedule, File('${localDir.path}/hibi_schedule_events.json'));
 
     if (await rootAssistant.exists()) {
       final dstAssist = Directory('${localDir.path}/hibi_assistant');
@@ -94,7 +134,9 @@ class AccountStoragePaths {
         } catch (_) {}
       }
       await for (final ent in rootAssistant.list()) {
-        if (ent is File && ent.path.contains('messages_') && ent.path.endsWith('.json')) {
+        if (ent is File &&
+            ent.path.contains('messages_') &&
+            ent.path.endsWith('.json')) {
           final name = ent.uri.pathSegments.last;
           final dstFile = File('${dstAssist.path}/$name');
           if (!await dstFile.exists()) {

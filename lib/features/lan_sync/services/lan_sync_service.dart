@@ -15,6 +15,7 @@ import '../../mind/services/mind_repository.dart';
 import '../../schedule/schedule_event_store.dart';
 import 'app_clock_offset.dart';
 import 'lan_sync_discovery.dart';
+import 'lan_sync_password.dart';
 
 enum LanSyncInboundKind { request, none }
 
@@ -25,6 +26,7 @@ class LanSyncInboundRequest {
     required this.fromDeviceId,
     required this.fromDeviceName,
     required this.fromAccountHint,
+    required this.fromAccountId,
     required this.pinRequired,
     required this.peerIp,
     required this.createdAt,
@@ -34,6 +36,7 @@ class LanSyncInboundRequest {
   final String fromDeviceId;
   final String fromDeviceName;
   final String fromAccountHint;
+  final String fromAccountId;
   final bool pinRequired;
   final String peerIp;
   final DateTime createdAt;
@@ -57,7 +60,7 @@ class LanSyncResult {
   final int clockOffsetMs;
 }
 
-/// 局域网数据同步：UDP 发现 + 本地 HTTP + PIN 配对 + LWW 合并。
+/// 局域网数据同步：UDP 发现 + 本地 HTTP + 连接密码配对 + 账号一致性校验 + LWW 合并。
 class LanSyncService {
   LanSyncService._();
   static final LanSyncService instance = LanSyncService._();
@@ -69,31 +72,71 @@ class LanSyncService {
   final ValueNotifier<LanSyncInboundRequest?> inboundNotifier =
       ValueNotifier<LanSyncInboundRequest?>(null);
   final ValueNotifier<String?> statusNotifier = ValueNotifier<String?>(null);
+  final ValueNotifier<String> passwordNotifier = ValueNotifier<String>('');
 
   LanSyncDiscovery? _discovery;
   HttpServer? _server;
   String? _deviceId;
   String _deviceName = '希比设备';
   String _accountHint = '';
+  String _accountId = '';
+  String _connectionPassword = '';
   int _httpPort = preferredHttpPort;
   bool _running = false;
 
-  /// requestId → 期望 PIN（可空表示无需 PIN）
+  /// requestId → 期望连接密码（发起方本地保存，对端回传后校验）
   final Map<String, String?> _pendingPins = {};
   /// requestId → Completer（发起方等待对端响应）
   final Map<String, Completer<Map<String, dynamic>>> _awaitingAccept = {};
   /// 已授权 session
   final Map<String, _LanSession> _sessions = {};
+  final Map<String, int> _callbackPorts = {};
 
   bool get isRunning => _running;
   int get httpPort => _httpPort;
   String get deviceId => _deviceId ?? '';
+  String get accountId => _accountId;
+  String get connectionPassword => _connectionPassword;
+
+  /// 稳定账号键：GitHub → login（小写）；本地账号 → 稳定 local id。
+  /// 握手字段 `accountId` 用此值比对「账号一致才连接」。
+  static String? resolveAccountId() {
+    final user = AuthRepository.instance.currentUser;
+    if (user == null) return null;
+    if (user.isGitHub) {
+      final login = user.githubLogin?.trim();
+      if (login != null && login.isNotEmpty) return login.toLowerCase();
+    }
+    if (user.isLocal) {
+      final id = user.userId.trim();
+      if (id.isNotEmpty) return id.toLowerCase();
+    }
+    final login = user.githubLogin?.trim();
+    if (login != null && login.isNotEmpty) return login.toLowerCase();
+    final id = user.userId.trim();
+    if (id.isNotEmpty) return id.toLowerCase();
+    return null;
+  }
+
+  static bool accountsMatch(String? a, String? b) {
+    final left = (a ?? '').trim().toLowerCase();
+    final right = (b ?? '').trim().toLowerCase();
+    if (left.isEmpty || right.isEmpty) return false;
+    return left == right;
+  }
 
   Future<void> start() async {
     if (_running) return;
+    final accountId = resolveAccountId();
+    if (accountId == null) {
+      throw StateError('请先登录');
+    }
     _deviceId ??= _newId('dev');
     _deviceName = await _resolveDeviceName();
+    _accountId = accountId;
     _accountHint = _resolveAccountHint();
+    _connectionPassword = await LanSyncPasswordStore.getOrCreate();
+    passwordNotifier.value = _connectionPassword;
     await AppClockOffset.instance.ensureLoaded();
 
     _httpPort = await _bindHttpServer();
@@ -101,6 +144,7 @@ class LanSyncService {
       deviceId: _deviceId!,
       deviceName: _deviceName,
       accountHint: _accountHint,
+      accountId: _accountId,
       httpPort: _httpPort,
     );
     _discovery!.peers.listen((list) {
@@ -130,23 +174,48 @@ class LanSyncService {
     }
     _awaitingAccept.clear();
     _sessions.clear();
+    _callbackPorts.clear();
     statusNotifier.value = null;
   }
 
-  /// 向对端发起同步申请；[pin] 非空时对端需输入相同 PIN。
-  Future<LanSyncResult> requestSyncWith(
-    LanSyncPeer peer, {
-    String? pin,
-  }) async {
+  Future<String> refreshPasswordDisplay() async {
+    _connectionPassword = await LanSyncPasswordStore.getOrCreate();
+    passwordNotifier.value = _connectionPassword;
+    return _connectionPassword;
+  }
+
+  Future<void> setConnectionPassword(String password) async {
+    await LanSyncPasswordStore.set(password);
+    _connectionPassword = password.trim();
+    passwordNotifier.value = _connectionPassword;
+  }
+
+  Future<String> resetConnectionPassword() async {
+    _connectionPassword = await LanSyncPasswordStore.reset();
+    passwordNotifier.value = _connectionPassword;
+    return _connectionPassword;
+  }
+
+  /// 向对端发起同步申请；使用本机连接密码，对端需输入相同密码。
+  Future<LanSyncResult> requestSyncWith(LanSyncPeer peer) async {
     if (!_running) {
       return const LanSyncResult(ok: false, message: '请先开启局域网同步');
     }
+    if (_accountId.isEmpty) {
+      return const LanSyncResult(ok: false, message: '请先登录');
+    }
+    if (!accountsMatch(_accountId, peer.accountId)) {
+      return const LanSyncResult(ok: false, message: '账号不一致');
+    }
+
+    final password = await LanSyncPasswordStore.getOrCreate();
+    _connectionPassword = password;
+    passwordNotifier.value = password;
+
     final requestId = _newId('req');
     final completer = Completer<Map<String, dynamic>>();
     _awaitingAccept[requestId] = completer;
-    _pendingPins[requestId] = (pin == null || pin.trim().isEmpty)
-        ? null
-        : pin.trim();
+    _pendingPins[requestId] = password;
 
     statusNotifier.value = '正在向 ${peer.displayLabel} 发起同步申请…';
     try {
@@ -159,15 +228,32 @@ class LanSyncService {
               'fromDeviceId': _deviceId,
               'fromDeviceName': _deviceName,
               'fromAccountHint': _accountHint,
-              'pinRequired': _pendingPins[requestId] != null,
+              'fromAccountId': _accountId,
+              'pinRequired': true,
               'callbackIp': await _guessLocalIp(),
               'callbackPort': _httpPort,
             }),
           )
           .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 403) {
+        _awaitingAccept.remove(requestId);
+        _pendingPins.remove(requestId);
+        return const LanSyncResult(ok: false, message: '账号不一致');
+      }
       if (res.statusCode != 200) {
         throw StateError('对端拒绝接收申请（HTTP ${res.statusCode}）');
       }
+      try {
+        final data = jsonDecode(res.body);
+        if (data is Map && data['ok'] == false) {
+          final err = data['error']?.toString() ?? '';
+          if (err == 'account_mismatch') {
+            _awaitingAccept.remove(requestId);
+            _pendingPins.remove(requestId);
+            return const LanSyncResult(ok: false, message: '账号不一致');
+          }
+        }
+      } catch (_) {}
     } catch (e) {
       _awaitingAccept.remove(requestId);
       _pendingPins.remove(requestId);
@@ -191,10 +277,14 @@ class LanSyncService {
     }
 
     if (accept['accepted'] != true) {
-      return LanSyncResult(
-        ok: false,
-        message: accept['reason']?.toString() ?? '对端已拒绝',
-      );
+      final reason = accept['reason']?.toString() ?? '对端已拒绝';
+      if (reason.contains('密码') || reason == 'bad pin') {
+        return const LanSyncResult(ok: false, message: '密码错误');
+      }
+      if (reason.contains('账号')) {
+        return const LanSyncResult(ok: false, message: '账号不一致');
+      }
+      return LanSyncResult(ok: false, message: reason);
     }
     final sessionToken = accept['sessionToken']?.toString() ?? '';
     if (sessionToken.isEmpty) {
@@ -232,11 +322,8 @@ class LanSyncService {
   }
 
   int _findCallbackPort(LanSyncInboundRequest inbound) {
-    // 发起方在 request 里带了 callbackPort，暂存在 peer 发现列表或 pending meta
     return _callbackPorts[inbound.requestId] ?? preferredHttpPort;
   }
-
-  final Map<String, int> _callbackPorts = {};
 
   Future<int> _bindHttpServer() async {
     final ports = [preferredHttpPort, 18766, 18767, 0];
@@ -263,7 +350,6 @@ class LanSyncService {
         await _writeJson(request, {
           'ok': true,
           'epochMs': DateTime.now().millisecondsSinceEpoch,
-          // 北京时间 ISO（UTC+8）
           'beijingIso': DateTime.now()
               .toUtc()
               .add(const Duration(hours: 8))
@@ -279,27 +365,40 @@ class LanSyncService {
           await _writeJson(request, {'ok': false}, status: 400);
           return;
         }
-        final pinRequired = body['pinRequired'] == true;
+        if (_accountId.isEmpty) {
+          await _writeJson(
+            request,
+            {'ok': false, 'error': 'not_logged_in'},
+            status: 403,
+          );
+          return;
+        }
+        final fromAccountId = body['fromAccountId']?.toString() ?? '';
+        if (!accountsMatch(_accountId, fromAccountId)) {
+          await _writeJson(
+            request,
+            {'ok': false, 'error': 'account_mismatch'},
+            status: 403,
+          );
+          return;
+        }
+        final pinRequired = body['pinRequired'] != false;
         final callbackPort = (body['callbackPort'] is num)
             ? (body['callbackPort'] as num).toInt()
             : int.tryParse('${body['callbackPort']}') ?? preferredHttpPort;
         _callbackPorts[requestId] = callbackPort;
-        // 发起方若设置了 PIN，会在后续 accept 时由本机用户输入；
-        // 期望 PIN 不在网络明文传输——发起方本地保存，对端输入后由发起方在 exchange 前已验证。
-        // 简化：PIN 校验放在发起方 accept 回调之前由对端用户输入，发起方在 /lan-sync/accept 不校验 PIN；
-        // 改为：对端 accept 时把 pin 带回，发起方校验。
         inboundNotifier.value = LanSyncInboundRequest(
           requestId: requestId,
           fromDeviceId: fromId,
           fromDeviceName: body['fromDeviceName']?.toString() ?? '希比设备',
           fromAccountHint: body['fromAccountHint']?.toString() ?? '',
+          fromAccountId: fromAccountId,
           pinRequired: pinRequired,
           peerIp: request.connectionInfo?.remoteAddress.address ??
               body['callbackIp']?.toString() ??
               '',
           createdAt: DateTime.now(),
         );
-        // 暂存：对端同意时会带 pin，发起方校验——此处标记 pinRequired 即可
         if (pinRequired) {
           _pendingPins[requestId] = '__peer_will_send__';
         }
@@ -316,14 +415,26 @@ class LanSyncService {
         }
         final accepted = body['accepted'] == true;
         if (accepted) {
-          // 若发起方设置了 PIN，要求对端回传 pin
+          final peerAccountId = body['fromAccountId']?.toString() ?? '';
+          if (peerAccountId.isNotEmpty &&
+              !accountsMatch(_accountId, peerAccountId)) {
+            completer.complete({
+              'accepted': false,
+              'reason': '账号不一致',
+            });
+            await _writeJson(
+              request,
+              {'ok': false, 'error': 'account_mismatch'},
+            );
+            return;
+          }
           final expected = _pendingPins[requestId];
           if (expected != null && expected != '__peer_will_send__') {
             final got = body['pin']?.toString() ?? '';
             if (got != expected) {
               completer.complete({
                 'accepted': false,
-                'reason': '配对码不正确',
+                'reason': '密码错误',
               });
               await _writeJson(request, {'ok': false, 'error': 'bad pin'});
               return;
@@ -350,7 +461,8 @@ class LanSyncService {
           return;
         }
         final localBundle = await _readLocalBundle();
-        final merged = _mergeBundles(localBundle, Map<String, dynamic>.from(remoteBundle));
+        final merged =
+            _mergeBundles(localBundle, Map<String, dynamic>.from(remoteBundle));
         await _writeLocalBundle(merged);
         await _reloadRepos();
         await _writeJson(request, {
@@ -394,7 +506,6 @@ class LanSyncService {
     }
 
     statusNotifier.value = '正在交换数据…';
-    // 本机也登记 session，便于对端回调 exchange（对称）
     _sessions[sessionToken] = _LanSession(
       peerDeviceId: 'peer',
       createdAt: DateTime.now(),
@@ -429,7 +540,6 @@ class LanSyncService {
       }
       final remoteMerged = data['bundle'];
       if (remoteMerged is Map) {
-        // 对端已合并双方数据；本机再与返回结果合并一次，保证一致
         final merged = _mergeBundles(
           localBundle,
           Map<String, dynamic>.from(remoteMerged),
@@ -464,11 +574,18 @@ class LanSyncService {
     }
   }
 
-  /// 同意时把用户输入的 PIN 带回给发起方校验。
+  /// 同意时把用户输入的连接密码带回给发起方校验。
   Future<LanSyncResult> acceptInboundWithPin(String pin) async {
     final inbound = inboundNotifier.value;
     if (inbound == null) {
       return const LanSyncResult(ok: false, message: '没有待处理的同步申请');
+    }
+    if (!accountsMatch(_accountId, inbound.fromAccountId)) {
+      await rejectInbound(reason: '账号不一致');
+      return const LanSyncResult(ok: false, message: '账号不一致');
+    }
+    if (inbound.pinRequired && pin.trim().isEmpty) {
+      return const LanSyncResult(ok: false, message: '密码错误');
     }
     final sessionToken = _newId('sess');
     _sessions[sessionToken] = _LanSession(
@@ -487,21 +604,29 @@ class LanSyncService {
               'accepted': true,
               'sessionToken': sessionToken,
               'fromDeviceId': _deviceId,
+              'fromAccountId': _accountId,
               'pin': pin.trim(),
             }),
           )
           .timeout(const Duration(seconds: 8));
       if (res.statusCode != 200) {
         _sessions.remove(sessionToken);
-        return LanSyncResult(ok: false, message: '通知发起方失败（HTTP ${res.statusCode}）');
+        return LanSyncResult(
+          ok: false,
+          message: '通知发起方失败（HTTP ${res.statusCode}）',
+        );
       }
       final data = jsonDecode(res.body);
       if (data is Map && data['ok'] == false) {
         _sessions.remove(sessionToken);
-        return LanSyncResult(
-          ok: false,
-          message: data['error']?.toString() == 'bad pin' ? '配对码不正确' : '发起方拒绝',
-        );
+        final err = data['error']?.toString() ?? '';
+        if (err == 'bad pin') {
+          return const LanSyncResult(ok: false, message: '密码错误');
+        }
+        if (err == 'account_mismatch') {
+          return const LanSyncResult(ok: false, message: '账号不一致');
+        }
+        return const LanSyncResult(ok: false, message: '发起方拒绝');
       }
     } catch (e) {
       _sessions.remove(sessionToken);
@@ -636,7 +761,18 @@ class LanSyncService {
 
   String _resolveAccountHint() {
     final user = AuthRepository.instance.currentUser;
-    if (user == null) return '本地账号';
+    if (user == null) return '';
+    if (user.isGitHub) {
+      final login = user.githubLogin?.trim();
+      if (login != null && login.isNotEmpty) return '@$login';
+    }
+    if (user.isLocal) {
+      final id = user.userId.trim();
+      if (id.length <= 12) return id;
+      return '${id.substring(0, 6)}…${id.substring(id.length - 4)}';
+    }
+    final login = user.githubLogin?.trim();
+    if (login != null && login.isNotEmpty) return '@$login';
     final name = user.displayName.trim();
     if (name.isNotEmpty) return name;
     final id = user.userId.trim();

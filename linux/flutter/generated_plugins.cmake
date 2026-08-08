@@ -7,8 +7,10 @@ list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_linux
   flutter_secure_storage_linux
   flutter_timezone
+  fullscreen_window
   record_linux
   url_launcher_linux
+  webview_win_floating
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

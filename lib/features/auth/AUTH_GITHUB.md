@@ -4,9 +4,24 @@
 
 自 **3.3.10** 起：登录页在 App **内嵌 WebView** 打开 GitHub 验证页（密码只在 GitHub 网页输入）；失败时回退系统浏览器。HTTP 超时加长，错误提示为中文。
 
-自 **3.3.11** 起：点「使用 GitHub 登录」后**立刻**打开内嵌页到 `https://github.com/login`（用户能看到账号密码框），同时并行申请 Device Flow 设备码；码就绪后再跳转验证页。HTTP 使用环境代理（`HTTPS_PROXY` 等），申请码失败会重试；网络不通时提示检查代理/VPN，并提供「在系统浏览器打开 GitHub」兜底。**不**经第三方加速反代 OAuth（避免 token 泄露）。
+自 **3.3.11** 起：点「使用 GitHub 登录」后曾立刻打开 `https://github.com/login` 并并行申请设备码。HTTP 使用环境代理（`HTTPS_PROXY` 等），申请码失败会重试；网络不通时提示检查代理/VPN，并提供「在系统浏览器打开 GitHub」兜底。**不**经第三方加速反代 OAuth（避免 token 泄露）。
 
-自 **3.3.12** 起：设备码到手即导航到带预填码的验证页（`https://github.com/login/device?user_code=XXXX-XXXX`，或 API 返回的 `verification_uri_complete`）；顶部说明验证码用途并保留复制兜底；监听 URL/标题/页面文案，授权成功（如 “Congratulations, you're all set!”）后自动关闭内嵌页，App 轮询拿到 token 后进入 Star 检查。
+自 **3.3.12** 起：设备码到手即导航到带预填码的验证页；顶部说明验证码用途；监听授权成功文案后自动关闭内嵌页。
+
+自 **3.3.13** 起：登录页文案精简；每轮**只申请一次** device/code（同源：顶栏码 / WebView URL / poll）。**默认内嵌 WebView**（`sameWindow` 处理 NewWindow），系统浏览器仅为次要入口。申请设备码有超时与「慢连接可取消」；**不做**自动填码/二次 `loadUrl`。**授权 ≠ 进 App，还必须 Star**。
+
+### 访问状态机（`AppAccessState`）
+
+| 状态 | 条件 | UI |
+|------|------|-----|
+| `notLoggedIn` | 无会话 | 登录页（GitHub / 本地账号） |
+| `local` | 本地账号 | `MainShell`；助理关闭；不要求 Star |
+| `githubNeedStar` | GitHub token 有、Star ≠ 204 | 登录页「去 Star」+「我已 Star」（不进主壳） |
+| `githubOk` | GitHub token **且** Star 204 | `MainShell`；助理开放 |
+
+局域网握手：`accountId` = GitHub `login`（小写）或本地稳定 `local_*` id。
+
+冷启动：`ensureLoaded` 复检；永远落到登录/Star 页或主壳，不白屏。
 
 > **Client ID 详细技术笔记**（含「勿建 GitHub App」、表单对照、发版注入、排障）：  
 > [`GITHUB_OAUTH_CLIENT_ID.md`](./GITHUB_OAUTH_CLIENT_ID.md)
@@ -66,19 +81,43 @@ flutter build windows --release --dart-define=GITHUB_CLIENT_ID=Ov23liXXXXXXXX
 
 ---
 
-## 流程（3.3.12）
+## 完整门禁流程（3.3.13）
 
-1. 用户点「使用 GitHub 登录」→ **立刻**内嵌 WebView 打开 `https://github.com/login`（可见账号密码框）
-2. **并行**向 `https://github.com/login/device/code` 申请 `user_code`（请求体带 `client_id`；失败最多重试 3 次）
-3. 设备码就绪后，WebView **立刻**跳到带预填码的验证页：优先 `verification_uri_complete`，否则构造 `https://github.com/login/device?user_code=XXXX-XXXX`；内嵌失败则外跳同一链接
-4. 用户登录（如需）→ 确认验证码 → 点 **Authorize**；WebView 检测到成功页后自动关闭；App 同时轮询拿到 `access_token`，调用 `GET /user`
-5. 调用 `GET /user/starred/YYOZZE/HIBI`：`204` 已 Star，`404` 未 Star
-6. 未 Star → 引导打开仓库 Star，并提供「重新检查」
-7. **持久化（不存密码）**：`access_token` 写入 `flutter_secure_storage`，并备份到 SharedPreferences / 会话快照；用户资料与 Star 缓存一并落盘。冷启动自动恢复；有有效 token 且 Star 仍有效 → 直接进主界面。token 401 或用户取消 Star 才再要求授权/补 Star。
+**授权 ≠ 进 App。** 必须先完成 GitHub Device 授权拿到 token，再用该 token 证明已 Star `YYOZZE/HIBI`，才会进入 `MainShell`。
 
-> **验证码（user_code）是什么？** 用于把「本次在网页上的授权」与 App 正在轮询的 `device_code` 绑定。一般已通过 URL / 页面自动填入，无需手抄；复制按钮仅作兜底。
+```mermaid
+flowchart TD
+  A[点「使用 GitHub 登录」] --> B[登录页申请设备码 busy]
+  B --> C[POST login/device/code]
+  C -->|失败| Cerr[明确错误 + 重试 / 系统浏览器]
+  C -->|成功| D[打开 WebView 直达 login/device?user_code=…]
+  D --> E[用户点 Authorize]
+  E --> F[轮询拿到 access_token / 关 WebView]
+  F --> G["GET /user/starred/YYOZZE/HIBI"]
+  G -->|204 已 Star| H[写入本地会话 starred=true]
+  H --> I[进入 MainShell]
+  G -->|404 未 Star| J[写入会话 starred=false]
+  J --> K[Star 引导页：打开仓库 + 我已 Star]
+  K --> G
+  L[冷启动有 token] --> G
+  G -->|网络失败| M[保留本地 Star 缓存]
+  G -->|401| N[清除本地会话 → 重新登录]
+```
 
-网络：单次连接超时约 20s、请求超时约 45s；HttpClient 启用 `findProxyFromEnvironment`（尊重 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`）。失败时展示中文说明（检查代理/VPN），并提供「在系统浏览器打开」与重试。OAuth 端点**不**走第三方 GitHub 加速镜像。
+### 逐步说明
+
+1. 点「使用 GitHub 登录」→ 登录页显示「正在申请设备码」（**此时不打开** `/login` / 仓库页 / 空 WebView）
+2. `POST https://github.com/login/device/code` 申请 `user_code`（失败最多重试 3 次；失败则明确错误 + 重试 + 系统浏览器）
+3. 码到手 → **才打开**内嵌 WebView，并 **强制** `loadUrl(verification_uri_complete 或 login/device?user_code=…)`（已登录也应直接到 Authorize / 确认页）
+4. 用户点 **Authorize** → App 轮询 `access_token` → 关闭 WebView → `GET /user`
+5. **Star 验证**（进 App 的真正门禁；授权 ≠ 进 App）：`GET https://api.github.com/user/starred/YYOZZE/HIBI`
+   - **204** → 已 Star → `loginWithGitHub(starred: true)` → `MainShell`
+   - **404** → 未 Star → 仍写入本地会话但 `starred: false` → 引导「打开仓库 Star」+「我已 Star，重新检查」
+6. **冷启动**：有有效 token → 复检 Star；网络失败可保留缓存；**401 才清会话**重登
+
+> **验证码（user_code）是什么？** 把「本次网页授权」与 App 轮询的 `device_code` 绑定。一般已通过 URL 预填；复制按钮仅作兜底。
+
+网络：连接超时约 20s、请求超时约 45s；HttpClient 尊重 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`。OAuth **不**走第三方 GitHub 加速镜像。
 
 > 升级安装一般**不会**清掉本机登录态。若每次更新都要重新在网页输密码，属于异常（已在 3.3.10 加固双写与恢复）。
 

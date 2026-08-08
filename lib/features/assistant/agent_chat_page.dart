@@ -1296,12 +1296,12 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                               icon: Icon(
                                 Icons.stop_circle_outlined,
                                 size: 18,
-                                color: colorScheme.error,
+                                color: Colors.white,
                               ),
                               label: Text(
                                 '打断',
                                 style: TextStyle(
-                                  color: colorScheme.error,
+                                  color: Colors.white,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),

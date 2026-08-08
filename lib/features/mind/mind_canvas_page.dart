@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import '../../app/app_theme_extension.dart';
 import '../../app/frosted_background.dart';
 import '../../config/api_config.dart';
+import '../auth/github_login_page.dart';
 import '../auth/services/auth_repository.dart';
 import '../assistant/agent_chat_page.dart';
 import '../assistant/services/assistant_api.dart';
@@ -1281,6 +1282,15 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
 
   /// 白板「助理」入口：查找或创建与当前项目同名的自动创建智能体，进入对话
   Future<void> _onAssistantTap() async {
+    if (!AuthRepository.instance.canUseAssistant) {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => const GitHubLoginPage(),
+        ),
+      );
+      return;
+    }
     final agent = await _assistantRepo.findOrCreateAgentForMindNode(
       widget.project.title,
       widget.project.id,

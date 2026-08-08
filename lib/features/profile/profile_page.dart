@@ -13,11 +13,17 @@ import 'agile_course_page.dart';
 import '../../app/app_glass_styles.dart';
 import '../../app/frosted_background.dart';
 
-/// 个人中心 - 未登录显示「本地账户」，仅点击头像进入登录；已登录可更换账户/退出
+/// 个人中心：本地账号显示「本地账号」+ id，可 GitHub 登录；
+/// 有会话时可「退出并重新登录」回到门禁页。
 class ProfilePage extends StatelessWidget {
   const ProfilePage({super.key});
 
-  static void _logoutDialog(BuildContext context) {
+  /// 清空会话 → [AuthRepository.canEnterShell] 为 false → 门禁回登录页。
+  static Future<void> _signOutAndReturnToGate() async {
+    await AuthRepository.instance.logout();
+  }
+
+  static void _confirmSignOut(BuildContext context) {
     showDialog<void>(
       context: context,
       builder: (ctx) {
@@ -26,8 +32,8 @@ class ProfilePage extends StatelessWidget {
           backgroundColor:
               theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
           surfaceTintColor: Colors.transparent,
-          title: const Text('退出登录'),
-          content: const Text('确定要退出 GitHub 登录吗？退出后需重新授权并确认已 Star 本仓库。'),
+          title: const Text('退出并重新登录'),
+          content: const Text('将返回登录页，可重新选择本地或 GitHub。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -36,7 +42,7 @@ class ProfilePage extends StatelessWidget {
             FilledButton(
               onPressed: () async {
                 Navigator.of(ctx).pop();
-                await AuthRepository.instance.logout();
+                await _signOutAndReturnToGate();
               },
               child: const Text('退出'),
             ),
@@ -46,41 +52,7 @@ class ProfilePage extends StatelessWidget {
     );
   }
 
-  static void _switchAccountDialog(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return AlertDialog(
-          backgroundColor:
-              theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
-          surfaceTintColor: Colors.transparent,
-          title: const Text('更换账户'),
-          content: const Text('将退出当前 GitHub 账户，返回后可使用其他 GitHub 账号登录。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                Navigator.of(ctx).pop();
-                await AuthRepository.instance.logout();
-                if (context.mounted) {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const LoginPage()),
-                  );
-                }
-              },
-              child: const Text('去登录'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _openLogin(BuildContext context) {
+  void _openGitHubLogin(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const LoginPage()),
     );
@@ -122,7 +94,9 @@ class ProfilePage extends StatelessWidget {
             child: ValueListenableBuilder<AuthUser?>(
               valueListenable: AuthRepository.instance.currentUserNotifier,
               builder: (context, user, _) {
-                final isLoggedIn = user != null;
+                final hasSession = user != null;
+                final isLocal = user?.isLocal == true;
+                final isGitHub = user?.isGitHub == true;
                 return ValueListenableBuilder<AppUpdateStatus?>(
                   valueListenable: AppUpdateService.instance.statusNotifier,
                   builder: (context, updateStatus, _) {
@@ -130,18 +104,29 @@ class ProfilePage extends StatelessWidget {
                       padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
                       children: [
                         _buildHeaderCard(
-                            context, theme, colorScheme, user, isLoggedIn),
+                          context,
+                          theme,
+                          colorScheme,
+                          user,
+                          isLocal: isLocal,
+                          isGitHub: isGitHub,
+                        ),
                         const SizedBox(height: 20),
                         _buildMainActionsCard(
                           context,
                           theme,
                           colorScheme,
-                          isLoggedIn,
-                          updateStatus,
+                          hasSession: hasSession,
+                          updateStatus: updateStatus,
                         ),
-                        if (isLoggedIn) ...[
+                        if (hasSession) ...[
                           const SizedBox(height: 20),
-                          _buildAccountActionsCard(context, theme, colorScheme),
+                          _buildAccountActionsCard(
+                            context,
+                            theme,
+                            colorScheme,
+                            isLocal: isLocal,
+                          ),
                         ],
                       ],
                     );
@@ -159,19 +144,26 @@ class ProfilePage extends StatelessWidget {
     BuildContext context,
     ThemeData theme,
     ColorScheme colorScheme,
-    AuthUser? user,
-    bool isLoggedIn,
-  ) {
-    final displayName = isLoggedIn
-        ? (user!.githubLogin != null
-            ? '@${user.githubLogin}'
-            : user.displayName)
-        : '未登录';
-    final subtitle = isLoggedIn
-        ? (user!.isGitHub
-            ? 'GitHub 已授权 · 已 Star YYOZZE/HIBI'
-            : user.phoneOrEmail)
-        : '点击头像使用 GitHub 登录';
+    AuthUser? user, {
+    required bool isLocal,
+    required bool isGitHub,
+  }) {
+    final String displayName;
+    final String subtitle;
+    if (isLocal && user != null) {
+      displayName = '本地账号';
+      subtitle = user.phoneOrEmail;
+    } else if (isGitHub && user != null) {
+      displayName = user.githubLogin != null
+          ? '@${user.githubLogin}'
+          : user.displayName;
+      subtitle = AuthRepository.instance.canUseAssistant
+          ? 'GitHub · 助理可用'
+          : 'GitHub';
+    } else {
+      displayName = '未登录';
+      subtitle = '选择本地进入或 GitHub 登录';
+    }
 
     return _ProfileCard(
       child: Padding(
@@ -184,10 +176,10 @@ class ProfilePage extends StatelessWidget {
               clipBehavior: Clip.antiAlias,
               child: InkWell(
                 onTap: () {
-                  if (isLoggedIn) {
-                    _openProfileEdit(context);
+                  if (user == null) {
+                    _openGitHubLogin(context);
                   } else {
-                    _openLogin(context);
+                    _openProfileEdit(context);
                   }
                 },
                 borderRadius: BorderRadius.circular(18),
@@ -231,19 +223,44 @@ class ProfilePage extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: OutlinedButton.icon(
-                      onPressed: () => _openValueAdded(context),
-                      icon: const Icon(Icons.workspace_premium_outlined,
-                          size: 16),
-                      label: const Text('订阅'),
-                      style: OutlinedButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 6),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      if (isLocal)
+                        FilledButton.tonalIcon(
+                          onPressed: () => _openGitHubLogin(context),
+                          icon: const Icon(Icons.login_rounded, size: 16),
+                          label: const Text('GitHub 登录'),
+                          style: FilledButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                          ),
+                        ),
+                      if (user == null)
+                        FilledButton.tonalIcon(
+                          onPressed: () => _openGitHubLogin(context),
+                          icon: const Icon(Icons.login_rounded, size: 16),
+                          label: const Text('登录账号'),
+                          style: FilledButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                          ),
+                        ),
+                      OutlinedButton.icon(
+                        onPressed: () => _openValueAdded(context),
+                        icon: const Icon(Icons.workspace_premium_outlined,
+                            size: 16),
+                        label: const Text('订阅'),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ),
@@ -257,10 +274,10 @@ class ProfilePage extends StatelessWidget {
   Widget _buildMainActionsCard(
     BuildContext context,
     ThemeData theme,
-    ColorScheme colorScheme,
-    bool isLoggedIn,
-    AppUpdateStatus? updateStatus,
-  ) {
+    ColorScheme colorScheme, {
+    required bool hasSession,
+    required AppUpdateStatus? updateStatus,
+  }) {
     final us = updateStatus;
     return _ProfileCard(
       child: Column(
@@ -306,11 +323,11 @@ class ProfilePage extends StatelessWidget {
             icon: Icons.person_outline,
             title: '个人资料',
             onTap: () {
-              if (!isLoggedIn) {
+              if (!hasSession) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('请先登录后再编辑个人资料')),
+                  const SnackBar(content: Text('请先登录')),
                 );
-                _openLogin(context);
+                _openGitHubLogin(context);
                 return;
               }
               _openProfileEdit(context);
@@ -369,28 +386,31 @@ class ProfilePage extends StatelessWidget {
   Widget _buildAccountActionsCard(
     BuildContext context,
     ThemeData theme,
-    ColorScheme colorScheme,
-  ) {
+    ColorScheme colorScheme, {
+    required bool isLocal,
+  }) {
     return _ProfileCard(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _profileTile(
-            context,
-            colorScheme,
-            theme,
-            icon: Icons.swap_horiz,
-            title: '更换账户',
-            onTap: () => _switchAccountDialog(context),
-          ),
-          Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+          if (isLocal) ...[
+            _profileTile(
+              context,
+              colorScheme,
+              theme,
+              icon: Icons.login_rounded,
+              title: 'GitHub 登录',
+              onTap: () => _openGitHubLogin(context),
+            ),
+            Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+          ],
           _profileTile(
             context,
             colorScheme,
             theme,
             icon: Icons.logout_rounded,
-            title: '退出登录',
-            onTap: () => _logoutDialog(context),
+            title: '退出当前账号',
+            onTap: () => _confirmSignOut(context),
           ),
         ],
       ),

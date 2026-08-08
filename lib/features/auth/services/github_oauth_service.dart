@@ -58,12 +58,16 @@ class GitHubDeviceCode {
   final int expiresIn;
   final int interval;
 
-  /// 打开验证页：始终带上 user_code（GitHub 预填），避免用户停在裸 /login/device。
-  String get bestVerificationUri => githubDeviceVerificationUri(
-        userCode: userCode,
-        baseUri: verificationUri,
-        verificationUriComplete: verificationUriComplete,
-      );
+  /// 打开验证页用的最终 URL（与 [userCode]/[deviceCode] 同一次 device/code 响应）。
+  /// 优先 API 的 verification_uri_complete，否则为带 user_code 的 verification_uri。
+  String get bestVerificationUri {
+    final cached = verificationUriComplete?.trim();
+    if (cached != null && cached.isNotEmpty) return cached;
+    return githubDeviceVerificationUri(
+      userCode: userCode,
+      baseUri: verificationUri,
+    );
+  }
 }
 
 /// GitHub 用户资料（/user）。
@@ -119,14 +123,17 @@ class GitHubOAuthService {
   /// 稳定键名：升级 App 不得变更，否则会读不到旧 token。
   static const String _secureTokenKey = 'hibi_github_oauth_token';
 
-  /// 单次连接超时（国内到 github.com 常偏慢；过长会让用户久等）。
-  static const Duration connectTimeout = Duration(seconds: 20);
+  /// 单次连接超时（过长会让登录页一直转圈）。
+  static const Duration connectTimeout = Duration(seconds: 12);
 
-  /// 单次请求总超时（连接 + 读响应）。
-  static const Duration requestTimeout = Duration(seconds: 45);
+  /// 一般 API 请求超时。
+  static const Duration requestTimeout = Duration(seconds: 30);
+
+  /// 申请设备码超时（单独收紧，便于尽快给出「重试」）。
+  static const Duration deviceCodeTimeout = Duration(seconds: 22);
 
   /// 申请设备码最大尝试次数（含首次）。
-  static const int deviceCodeMaxAttempts = 3;
+  static const int deviceCodeMaxAttempts = 2;
 
   final http.Client _http;
   final bool _ownsClient;
@@ -171,6 +178,7 @@ class GitHubOAuthService {
             'scope': GitHubOAuthConfig.scopes,
           },
           stepLabel: '申请设备码',
+          timeout: deviceCodeTimeout,
         );
         if (resp.statusCode < 200 || resp.statusCode >= 300) {
           throw GitHubOAuthException(
@@ -188,16 +196,22 @@ class GitHubOAuthService {
             '设备码响应无效，请重试或检查 OAuth App 是否启用 Device Flow。',
           );
         }
-        final complete = githubDeviceVerificationUri(
+        // 只规范化一次：UI / 打开链接 / poll 必须共用这份结果，禁止后续再申请新码拼旧链接。
+        final openUrl = githubDeviceVerificationUri(
           userCode: userCode,
           baseUri: uri,
           verificationUriComplete: uriComplete,
         );
+        debugPrint(
+          'GitHub device/code ok: user_code=$userCode '
+          'device=${deviceCode.substring(0, 8)}… openUrl=$openUrl '
+          'api_complete=${uriComplete ?? "(none)"}',
+        );
         return GitHubDeviceCode(
           deviceCode: deviceCode,
-          userCode: userCode,
+          userCode: userCode.trim().toUpperCase(),
           verificationUri: uri,
-          verificationUriComplete: complete,
+          verificationUriComplete: openUrl,
           expiresIn: (map['expires_in'] as num?)?.toInt() ?? 900,
           interval: (map['interval'] as num?)?.toInt() ?? 5,
         );
@@ -272,6 +286,10 @@ class GitHubOAuthService {
         if (token.isEmpty) {
           throw const GitHubOAuthException('未返回 access_token，请重试。');
         }
+        final prefix = token.length >= 8 ? token.substring(0, 8) : token;
+        debugPrint(
+          'GitHub Device Flow: 已拿到 access_token（前缀 $prefix…，len=${token.length}）',
+        );
         return token;
       }
       if (err == 'authorization_pending') {
@@ -282,11 +300,23 @@ class GitHubOAuthService {
         continue;
       }
       if (err == 'expired_token') {
+        debugPrint(
+          'GitHub Device Flow: expired_token device=${code.deviceCode.substring(0, 8)}…',
+        );
         throw const GitHubOAuthException('设备码已过期，请重新登录。');
       }
       if (err == 'access_denied') {
-        throw const GitHubOAuthException('你已在 GitHub 网页上拒绝授权。');
+        // 仅当 GitHub 对「当前」device_code 明确返回拒绝（用户点了 Cancel）。
+        debugPrint(
+          'GitHub Device Flow: access_denied device=${code.deviceCode.substring(0, 8)}… '
+          'user_code=${code.userCode}',
+        );
+        throw const GitHubOAuthException(
+          '你已在 GitHub 网页上拒绝授权（点了 Cancel）。'
+          '若并未点拒绝，请重试登录（可能是上一轮残留）。',
+        );
       }
+      debugPrint('GitHub Device Flow: unexpected error=$err');
       throw GitHubOAuthException('授权失败：$err');
     }
     throw const GitHubOAuthException('登录等待超时，请重新开始并在时限内完成网页授权。');
@@ -334,8 +364,14 @@ class GitHubOAuthService {
       },
       stepLabel: '检查 Star',
     );
-    if (resp.statusCode == 204) return true;
-    if (resp.statusCode == 404) return false;
+    if (resp.statusCode == 204) {
+      debugPrint('GitHub Star 校验: 204 → 已 Star ${GitHubOAuthConfig.repoFullName}');
+      return true;
+    }
+    if (resp.statusCode == 404) {
+      debugPrint('GitHub Star 校验: 404 → 未 Star ${GitHubOAuthConfig.repoFullName}');
+      return false;
+    }
     if (resp.statusCode == 401 || resp.statusCode == 403) {
       throw const GitHubUnauthorizedException();
     }
@@ -392,6 +428,7 @@ class GitHubOAuthService {
     Uri uri,
     Map<String, String> body, {
     required String stepLabel,
+    Duration? timeout,
   }) async {
     try {
       return await _http
@@ -404,7 +441,7 @@ class GitHubOAuthService {
             },
             body: body,
           )
-          .timeout(requestTimeout);
+          .timeout(timeout ?? requestTimeout);
     } catch (e) {
       throw _mapNetworkError(e, stepLabel);
     }
@@ -437,50 +474,33 @@ class GitHubOAuthService {
     if (e is GitHubOAuthException) return e;
     if (e is TimeoutException) {
       return GitHubOAuthException(
-        '$stepLabel 超时：当前网络访问 GitHub 较慢或被阻断。\n'
-        '请检查代理/VPN（需能打开 github.com / api.github.com），'
-        '或点「在系统浏览器打开」后重试。',
+        '$stepLabel 超时，请重试',
         isNetwork: true,
       );
     }
-    if (e is SocketException) {
-      final msg = e.message;
-      final os = e.osError?.message ?? '';
-      final detail = os.isNotEmpty && !msg.contains(os) ? '$msg / $os' : msg;
+    if (e is SocketException || e is HandshakeException) {
       return GitHubOAuthException(
-        '$stepLabel 失败：无法连接 GitHub（$detail）。\n'
-        '本应用需直连 github.com / api.github.com。'
-        '若出现 semaphore timeout / 连接超时，请开启可访问 GitHub 的代理或 VPN，'
-        '并确认系统/终端已配置 HTTPS_PROXY（如有），然后重试；'
-        '也可先用「在系统浏览器打开」到达 GitHub 登录页。',
-        isNetwork: true,
-      );
-    }
-    if (e is HandshakeException) {
-      return GitHubOAuthException(
-        '$stepLabel 失败：与 GitHub 的安全连接异常。请检查系统时间、代理/VPN 与网络环境后重试。',
+        '无法连接 GitHub，请检查网络后重试',
         isNetwork: true,
       );
     }
     if (e is http.ClientException) {
       return GitHubOAuthException(
-        '$stepLabel 失败：${e.message}\n'
-        '请确认可访问 GitHub（必要时开启代理/VPN）后重试。',
+        '无法连接 GitHub，请重试',
         isNetwork: true,
       );
     }
-    final s = e.toString();
-    if (s.toLowerCase().contains('semaphore timeout') ||
-        s.toLowerCase().contains('timed out') ||
-        s.contains('Failed host lookup') ||
-        s.contains('Connection reset')) {
-      return GitHubOAuthException(
-        '$stepLabel 失败：$e\n'
-        '请检查代理/VPN 后重试，或使用「在系统浏览器打开」。',
+    final s = e.toString().toLowerCase();
+    if (s.contains('timeout') ||
+        s.contains('semaphore') ||
+        s.contains('failed host lookup') ||
+        s.contains('connection')) {
+      return const GitHubOAuthException(
+        '网络不通，请重试',
         isNetwork: true,
       );
     }
-    return GitHubOAuthException('$stepLabel 失败：$e');
+    return GitHubOAuthException('$stepLabel 失败，请重试');
   }
 
   String _httpStatusHint(int status, String title, String body) {
@@ -500,13 +520,12 @@ class GitHubOAuthService {
   /// 将任意异常转为用户可读中文。
   static String friendlyError(Object e) {
     if (e is GitHubOAuthException) return e.message;
-    final s = e.toString();
-    if (s.contains('TimeoutException') ||
-        s.toLowerCase().contains('semaphore timeout')) {
-      return '连接 GitHub 超时。请检查代理/VPN（需能访问 github.com）后重试，'
-          '或使用「在系统浏览器打开」。';
+    final s = e.toString().toLowerCase();
+    if (s.contains('timeout') || s.contains('semaphore')) {
+      return '连接超时，请重试';
     }
-    return s
+    return e
+        .toString()
         .replaceFirst('Bad state: ', '')
         .replaceFirst('Exception: ', '')
         .replaceFirst('GitHubOAuthException: ', '');
