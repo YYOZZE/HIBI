@@ -1211,8 +1211,8 @@ class _TransferPageState extends State<TransferPage> {
       }
       return;
     }
+    // 拖入只入队；发送由卡片内「发送」统一触发，避免与待发送列表割裂
     await _addQueuedSendPaths(paths);
-    await _sendPaths(paths);
   }
 
   Future<void> _sendPaths(List<String> paths) async {
@@ -1278,13 +1278,12 @@ class _TransferPageState extends State<TransferPage> {
     }
   }
 
-  Future<void> _pickAndSend() async {
+  Future<void> _pickAndQueue() async {
     final result = await FilePicker.platform.pickFiles(allowMultiple: true);
     if (result == null || result.files.isEmpty) return;
     final paths =
         result.files.map((file) => file.path).whereType<String>().toList();
     await _addQueuedSendPaths(paths);
-    await _sendPaths(paths);
   }
 
   Future<void> _pickAndSendToDevice(TransferDevice device,
@@ -1443,95 +1442,235 @@ class _TransferPageState extends State<TransferPage> {
     }
   }
 
-  Widget _buildQueuedFiles(ThemeData theme, ColorScheme colorScheme) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const SizedBox(height: 14),
-        Row(
-          children: [
-            Icon(Icons.playlist_add_check_rounded,
-                size: 20, color: colorScheme.primary),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                '待发送文件（${_queuedSendPaths.length}）',
-                style: theme.textTheme.titleSmall,
+  /// 一体化发送托盘：拖放区与待发送列表同框（参考 LocalSend / 系统分享托盘）。
+  Widget _buildSendFileComposer(ThemeData theme, ColorScheme colorScheme) {
+    final hasQueue = _queuedSendPaths.isNotEmpty;
+    final borderColor = _draggingFiles
+        ? colorScheme.primary
+        : colorScheme.outline.withOpacity(hasQueue ? 0.28 : 0.38);
+    final fill = _draggingFiles
+        ? colorScheme.primaryContainer.withOpacity(0.22)
+        : colorScheme.surfaceContainerHighest.withOpacity(0.28);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          width: _draggingFiles ? 2 : 1.25,
+          color: borderColor,
+        ),
+        color: fill,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 顶部：紧凑投放条（有文件时更矮，空态略高）
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: _sending ? null : _pickAndQueue,
+              borderRadius: BorderRadius.vertical(
+                top: const Radius.circular(13),
+                bottom: Radius.circular(hasQueue ? 0 : 13),
+              ),
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: hasQueue ? 14 : 22,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: hasQueue ? 40 : 48,
+                      height: hasQueue ? 40 : 48,
+                      decoration: BoxDecoration(
+                        color: colorScheme.primary.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        _draggingFiles
+                            ? Icons.file_download_outlined
+                            : Icons.cloud_upload_outlined,
+                        size: hasQueue ? 22 : 26,
+                        color: _draggingFiles
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _draggingFiles
+                                ? '松开以加入待发送列表'
+                                : (_isDesktopTransferDropSupported
+                                    ? (hasQueue
+                                        ? '继续拖入文件，或点此添加'
+                                        : '拖放文件到此处，或点击选择')
+                                    : (hasQueue ? '点此添加更多文件' : '点击选择要发送的文件')),
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                              color: _draggingFiles
+                                  ? colorScheme.primary
+                                  : colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            hasQueue
+                                ? '待发送 ${_queuedSendPaths.length} 个 · 发送后仍保留在本列表'
+                                : '支持多选；发送前可在下方检查与移除',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                              height: 1.3,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (!hasQueue)
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        color: colorScheme.onSurfaceVariant.withOpacity(0.7),
+                      ),
+                  ],
+                ),
               ),
             ),
-            Text(
-              '发送后保留',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: colorScheme.onSurfaceVariant),
+          ),
+          if (hasQueue) ...[
+            Divider(
+              height: 1,
+              thickness: 1,
+              color: colorScheme.outline.withOpacity(0.16),
+            ),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+                itemCount: _queuedSendPaths.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 6),
+                itemBuilder: (context, index) {
+                  final path = _queuedSendPaths[index];
+                  final file = File(path);
+                  final exists = file.existsSync();
+                  String? size;
+                  if (exists) {
+                    try {
+                      size = TransferFileActions.formatSize(file.lengthSync());
+                    } catch (_) {}
+                  }
+                  final name = path.split(RegExp(r'[/\\]')).last;
+                  return Material(
+                    color: colorScheme.surface.withOpacity(0.35),
+                    borderRadius: BorderRadius.circular(10),
+                    child: ListTile(
+                      dense: true,
+                      visualDensity: VisualDensity.compact,
+                      contentPadding: const EdgeInsets.only(left: 10, right: 4),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        side: BorderSide(
+                          color: exists
+                              ? colorScheme.outline.withOpacity(0.18)
+                              : colorScheme.error.withOpacity(0.55),
+                        ),
+                      ),
+                      leading: Icon(
+                        TransferFileActions.iconForPath(path,
+                            isDirectory: false),
+                        size: 22,
+                        color:
+                            exists ? colorScheme.primary : colorScheme.error,
+                      ),
+                      title: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(fontWeight: FontWeight.w500),
+                      ),
+                      subtitle: Text(
+                        exists
+                            ? [if (size != null) size, file.parent.path]
+                                .join(' · ')
+                            : '源文件已移动或删除',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: exists
+                              ? colorScheme.onSurfaceVariant
+                              : colorScheme.error,
+                        ),
+                      ),
+                      onTap: exists
+                          ? () => TransferFileActions.openFile(context, path)
+                          : null,
+                      trailing: IconButton(
+                        icon: const Icon(Icons.close_rounded, size: 18),
+                        color: colorScheme.onSurfaceVariant,
+                        tooltip: '移除',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: _sending
+                            ? null
+                            : () => _removeQueuedSendPath(path),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _sending ? null : _pickAndQueue,
+                      icon: const Icon(Icons.add_rounded, size: 18),
+                      label: const Text('添加'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(44),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed: _sending ? null : _sendQueuedFiles,
+                      icon: _sending
+                          ? SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: colorScheme.onPrimary,
+                              ),
+                            )
+                          : const Icon(Icons.send_rounded, size: 18),
+                      label: Text(
+                        _sending
+                            ? '发送中…'
+                            : '发送 ${_queuedSendPaths.length} 个文件',
+                      ),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(44),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
-        ),
-        const SizedBox(height: 8),
-        for (final path in _queuedSendPaths) ...[
-          Builder(builder: (context) {
-            final file = File(path);
-            final exists = file.existsSync();
-            String? size;
-            if (exists) {
-              try {
-                size = TransferFileActions.formatSize(file.lengthSync());
-              } catch (_) {}
-            }
-            return Container(
-              margin: const EdgeInsets.only(bottom: 8),
-              decoration: BoxDecoration(
-                color: colorScheme.surfaceContainerHighest.withOpacity(0.38),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: exists
-                      ? colorScheme.outline.withOpacity(0.3)
-                      : colorScheme.error.withOpacity(0.65),
-                ),
-              ),
-              child: ListTile(
-                dense: true,
-                leading: Icon(
-                  TransferFileActions.iconForPath(path, isDirectory: false),
-                  color: exists ? colorScheme.primary : colorScheme.error,
-                ),
-                title: Text(
-                  path.split(RegExp(r'[/\\]')).last,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  exists
-                      ? [if (size != null) size, file.parent.path].join(' · ')
-                      : '源文件已移动或删除',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: exists
-                        ? colorScheme.onSurfaceVariant
-                        : colorScheme.error,
-                  ),
-                ),
-                onTap: exists
-                    ? () => TransferFileActions.openFile(context, path)
-                    : null,
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  color: colorScheme.error,
-                  tooltip: '从待发送列表移除',
-                  onPressed:
-                      _sending ? null : () => _removeQueuedSendPath(path),
-                ),
-              ),
-            );
-          }),
         ],
-        const SizedBox(height: 2),
-        OutlinedButton.icon(
-          onPressed: _sending ? null : _sendQueuedFiles,
-          icon: const Icon(Icons.send_outlined),
-          label: Text('发送列表中的 ${_queuedSendPaths.length} 个文件'),
-        ),
-      ],
+      ),
     );
   }
 
@@ -1608,74 +1747,9 @@ class _TransferPageState extends State<TransferPage> {
                   ),
                   const SizedBox(height: 20),
                   if (_sendTabIndex == 0) ...[
-                    // 拖放热区：约屏高 32%，320–480，方便电脑端瞄准
-                    Container(
-                      width: double.infinity,
-                      height: (MediaQuery.sizeOf(context).height * 0.32)
-                          .clamp(320.0, 480.0),
-                      alignment: Alignment.center,
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 36, horizontal: 24),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          width: 2,
-                          color: _draggingFiles
-                              ? colorScheme.primary
-                              : colorScheme.outline.withOpacity(0.4),
-                        ),
-                        color: _draggingFiles
-                            ? colorScheme.primaryContainer.withOpacity(0.28)
-                            : colorScheme.surfaceContainerHighest
-                                .withOpacity(0.4),
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.cloud_upload_outlined,
-                            size: 64,
-                            color: _draggingFiles
-                                ? colorScheme.primary
-                                : colorScheme.onSurfaceVariant,
-                          ),
-                          const SizedBox(height: 20),
-                          Text(
-                            _draggingFiles
-                                ? '松开即可发送文件或文件夹'
-                                : (_isDesktopTransferDropSupported
-                                    ? '可将文件/文件夹拖放到此区域发送（电脑端）'
-                                    : '点下方按钮选择文件并发送'),
-                            textAlign: TextAlign.center,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                              height: 1.35,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton.icon(
-                      onPressed: _sending ? null : _pickAndSend,
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                      icon: _sending
-                          ? SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: colorScheme.onPrimary),
-                            )
-                          : const Icon(Icons.upload_file),
-                      label: Text(_sending ? '发送中…' : '选择文件并发送'),
-                    ),
-                    if (_queuedSendPaths.isNotEmpty)
-                      _buildQueuedFiles(theme, colorScheme),
+                    _buildSendFileComposer(theme, colorScheme),
                     if (_sending) ...[
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 12),
                       LinearProgressIndicator(value: _sendProgress),
                       const SizedBox(height: 4),
                       Text(
@@ -1690,8 +1764,7 @@ class _TransferPageState extends State<TransferPage> {
                     ],
                   ] else ...[
                     SizedBox(
-                      height: (MediaQuery.sizeOf(context).height * 0.32)
-                          .clamp(320.0, 480.0),
+                      height: 160,
                       child: TextField(
                         controller: _textController,
                         maxLines: null,

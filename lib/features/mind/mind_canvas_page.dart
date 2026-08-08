@@ -1170,32 +1170,35 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
   }
 
   /// 选中方块的缩放手柄：右下角（宽高同调）+ 右边中点（仅调宽）+ 下边中点（仅调高）。
-  /// 尺寸按 1/_scale 放大，保证画布缩小时手柄依然可点。
-  /// 热区远大于可视 grip，避免「看得见却要点准」；手柄置顶于方块之上。
+  /// 尺寸按 1/_scale 放大；角手柄热区更大且置于最上层，避免被边手柄盖住。
   List<Widget> _buildBlockResizeHandles(CanvasBlock block) {
-    // hit: 触点热区（画布坐标，屏幕约 80px）；grip: 可视大小（屏幕约 20px）
-    final hit = 80.0 / _scale;
-    final grip = 20.0 / _scale;
+    // 屏幕像素热区 → 画布坐标；角区更大，边区略小并避开角区重叠
+    final cornerHit = 120.0 / _scale;
+    final edgeHit = 64.0 / _scale;
+    final grip = 28.0 / _scale;
+    final outward = 10.0 / _scale; // 角手柄中心略移出方块，减少与 Draggable 抢手势
     final strokeWidth = 2.0 / _scale;
     final colorScheme = Theme.of(context).colorScheme;
 
-    Widget gripBox(_ResizeGrip gripKind) => MouseRegion(
+    Widget gripBox(_ResizeGrip gripKind, {required double visual}) => MouseRegion(
           cursor: gripKind == _ResizeGrip.corner
               ? SystemMouseCursors.resizeDownRight
               : gripKind == _ResizeGrip.right
                   ? SystemMouseCursors.resizeLeftRight
                   : SystemMouseCursors.resizeUpDown,
-          child: SizedBox.expand(
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => _onResizeStart(block, gripKind),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onPanStart: (d) => _onResizeStart(block, gripKind),
+              onPanStart: (_) => _onResizeStart(block, gripKind),
               onPanUpdate: (d) => _onResizeUpdate(block, gripKind, d),
               onPanEnd: (_) => _onResizeEnd(),
               onPanCancel: _onResizeEnd,
               child: Center(
                 child: IgnorePointer(
                   child: CustomPaint(
-                    size: Size(grip, grip),
+                    size: Size(visual, visual),
                     painter: _ResizeGripPainter(
                       color: colorScheme.primary,
                       lineColor: colorScheme.onPrimary,
@@ -1209,19 +1212,53 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
           ),
         );
 
-    Positioned at(double cx, double cy, _ResizeGrip kind) => Positioned(
+    Positioned at(
+      double cx,
+      double cy,
+      _ResizeGrip kind, {
+      required double hit,
+    }) =>
+        Positioned(
           left: cx - hit / 2,
           top: cy - hit / 2,
           width: hit,
           height: hit,
-          child: gripBox(kind),
+          child: gripBox(kind, visual: kind == _ResizeGrip.corner ? grip : grip * 0.85),
         );
 
-    return [
-      at(block.x + block.width, block.y + block.height, _ResizeGrip.corner),
-      at(block.x + block.width, block.y + block.height / 2, _ResizeGrip.right),
-      at(block.x + block.width / 2, block.y + block.height, _ResizeGrip.bottom),
-    ];
+    final handles = <Widget>[];
+    // 边手柄：仅在足够大时显示，并内缩远离角点，避免盖住角缩放
+    final edgeInset = cornerHit * 0.55;
+    if (block.height > edgeInset * 2 + 24) {
+      handles.add(
+        at(
+          block.x + block.width + outward * 0.35,
+          block.y + block.height / 2,
+          _ResizeGrip.right,
+          hit: edgeHit,
+        ),
+      );
+    }
+    if (block.width > edgeInset * 2 + 24) {
+      handles.add(
+        at(
+          block.x + block.width / 2,
+          block.y + block.height + outward * 0.35,
+          _ResizeGrip.bottom,
+          hit: edgeHit,
+        ),
+      );
+    }
+    // 角手柄最后加入 → Stack 最上层，保证右下角始终可点
+    handles.add(
+      at(
+        block.x + block.width + outward,
+        block.y + block.height + outward,
+        _ResizeGrip.corner,
+        hit: cornerHit,
+      ),
+    );
+    return handles;
   }
 
   void _onResizeStart(CanvasBlock block, _ResizeGrip kind) {
@@ -2024,22 +2061,32 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                         _blockDragPointerOffset.remove(block.id);
                                         _saveItems();
                                       }
+                                      final resizingThis =
+                                          _resizingBlockId == block.id;
                                       final draggable = Draggable<String>(
                                         data: block.id,
+                                        // 缩放中禁止拖动方块，避免与角手柄抢手势
+                                        maxSimultaneousDrags:
+                                            (_resizingBlockId != null) ? 0 : 1,
                                         feedback: const SizedBox.shrink(),
                                         dragAnchorStrategy: pointerDragAnchorStrategy,
                                         childWhenDragging: blockWidget(),
                                         onDragStarted: () {
+                                          if (_resizingBlockId != null) return;
                                           _markUserInteracting();
                                           _draggingBlockId = block.id;
                                         },
-                                        onDragUpdate: onDragUpdate,
+                                        onDragUpdate: resizingThis
+                                            ? null
+                                            : onDragUpdate,
                                         onDragEnd: onDragEnd,
                                         child: Listener(
                                           behavior: HitTestBehavior.translucent,
                                           onPointerDown: (e) {
+                                            if (_resizingBlockId != null) return;
                                             _markUserInteracting();
-                                            _blockDragPointerOffset[block.id] = e.localPosition;
+                                            _blockDragPointerOffset[block.id] =
+                                                e.localPosition;
                                           },
                                           child: blockWidget(),
                                         ),

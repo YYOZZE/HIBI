@@ -2046,13 +2046,22 @@ class _MessageBubble extends StatelessWidget {
             ),
           ),
         if (message.content.trim().isNotEmpty)
-          Text(
-            message.content,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: onFg,
-              height: 1.4,
-            ),
-          ),
+          // 多选模式用普通 Text，避免与勾选手势冲突；日常支持划选/复制
+          selectionMode
+              ? Text(
+                  message.content,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: onFg,
+                    height: 1.4,
+                  ),
+                )
+              : SelectableText(
+                  message.content,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: onFg,
+                    height: 1.4,
+                  ),
+                ),
       ],
     );
 
@@ -2078,11 +2087,17 @@ class _MessageBubble extends StatelessWidget {
       child: body,
     );
 
-    if (onLongPress != null || onTap != null) {
+    // 多选点选：包一层 InkWell；长按菜单挂在外层，避免挡住文字划选
+    if (onTap != null) {
       bubble = InkWell(
-        onLongPress: onLongPress,
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
+        child: bubble,
+      );
+    } else if (onLongPress != null) {
+      bubble = GestureDetector(
+        onLongPress: onLongPress,
+        behavior: HitTestBehavior.deferToChild,
         child: bubble,
       );
     }
