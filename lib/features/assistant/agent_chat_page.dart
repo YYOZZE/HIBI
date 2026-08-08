@@ -1,32 +1,32 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:open_filex/open_filex.dart' show OpenFilex, ResultType;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 
 import '../../app/app_theme_extension.dart';
 import '../../app/frosted_background.dart';
 import '../../app/theme_notifier.dart';
-import '../../config/api_config.dart';
 import '../auth/services/auth_repository.dart';
-import '../auth/services/user_sync_service.dart';
 import '../auth/services/user_sync_scheduler.dart';
-import '../profile/subscription_access_service.dart';
-import '../profile/value_added_page.dart';
-import '../mind/services/mind_repository.dart';
-import '../schedule/schedule_event_store.dart';
 import 'models/agent.dart';
+import 'models/chat_attachment.dart';
 import 'models/chat_message.dart';
+import 'models/mind_topic_ref.dart';
 import 'services/assistant_api.dart';
 import 'services/assistant_repository.dart';
 import 'services/asr_service.dart';
 import 'services/asr_stream_service.dart';
+import 'services/chat_attachment_picker.dart';
+import 'services/chat_session_service.dart';
 
-/// 单个智能体的文字对话页（豆包式：消息气泡 + 底部输入）
+/// 单个智能体的文字对话页（一体式输入条 + 消息气泡）
 /// 长按气泡：复制 / 删除本条 / 进入多选；多选模式下可批量删除
 class AgentChatPage extends StatefulWidget {
   const AgentChatPage({
@@ -36,6 +36,8 @@ class AgentChatPage extends StatefulWidget {
     required this.api,
     required this.onAgentUpdated,
     this.currentMindNodeId,
+    this.mindProjectTitle,
+    this.initialTopicRef,
   });
 
   final Agent agent;
@@ -44,6 +46,10 @@ class AgentChatPage extends StatefulWidget {
   final VoidCallback onAgentUpdated;
   /// 当前思维节点（项目）id，从白板进入时传入，供工具调用使用
   final String? currentMindNodeId;
+  /// 思维导图项目标题（与 [currentMindNodeId] 一起构成话题引用）
+  final String? mindProjectTitle;
+  /// 显式话题引用（优先于 currentMindNodeId + mindProjectTitle）
+  final MindTopicRef? initialTopicRef;
 
   @override
   State<AgentChatPage> createState() => _AgentChatPageState();
@@ -52,8 +58,11 @@ class AgentChatPage extends StatefulWidget {
 class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProviderStateMixin {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final ChatSessionService _session = ChatSessionService.instance;
+  final ChatAttachmentPicker _attachmentPicker = ChatAttachmentPicker();
   List<ChatMessage> _messages = [];
   bool _loading = false;
+  int _queueDepth = 0;
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
   bool _voiceInputMode = false;
@@ -87,10 +96,27 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   int _micRingBytes = 0;
   static const int _micRingMaxBytes = 96000; // ~3s @ 16kHz mono PCM16
 
+  MindTopicRef? _topicRef;
+  final List<ChatAttachment> _pendingAttachments = [];
+
   @override
   void initState() {
     super.initState();
+    _topicRef = widget.initialTopicRef ??
+        ((widget.currentMindNodeId != null &&
+                widget.currentMindNodeId!.trim().isNotEmpty)
+            ? MindTopicRef(
+                projectId: widget.currentMindNodeId!.trim(),
+                projectTitle: (widget.mindProjectTitle ?? '').trim(),
+              )
+            : null);
     UserSyncScheduler.syncEpoch.addListener(_onSyncEpoch);
+    final agentId = widget.agent.id;
+    _loading = _session.isLoading(agentId);
+    _queueDepth = _session.queueDepth(agentId);
+    _session.loadingOf(agentId).addListener(_onSessionChanged);
+    _session.revisionOf(agentId).addListener(_onSessionChanged);
+    _session.queueDepthOf(agentId).addListener(_onSessionChanged);
     _waveController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
@@ -100,6 +126,16 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       _checkAsrConfig();
       _preWarmAsrRecording();
     });
+  }
+
+  void _onSessionChanged() {
+    if (!mounted) return;
+    setState(() {
+      _loading = _session.isLoading(widget.agent.id);
+      _queueDepth = _session.queueDepth(widget.agent.id);
+      _messages = widget.repository.getMessages(widget.agent.id).toList();
+    });
+    _scrollToEnd();
   }
 
   /// 与参考项目一致：首帧后探测录音能力，不主动弹系统权限框
@@ -120,49 +156,95 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     if (mounted) setState(() => _asrConfigured = configured);
   }
 
+  Future<void> _ensureAsrReadyOrHint() async {
+    await _checkAsrConfig();
+    if (_asrConfigured) return;
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('请先在「设置 → 智能体配置」填写并启用语音识别（ASR）'),
+        duration: Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   Future<void> _loadMessages() async {
-    // 登录态优先从后端拉取“真实历史”（方案 B）；未登录或失败则回落本地缓存
-    final token = AuthRepository.instance.currentUser?.token;
-    if (token != null && token.isNotEmpty) {
-      try {
-        final convId = await widget.api.getOrCreateConversationId(
-          agentId: widget.agent.id,
-          title: widget.agent.name,
-          token: token,
-        );
-        if (convId != null && convId.isNotEmpty) {
-          final res = await widget.api.listConversationMessages(
-            conversationId: convId,
-            limit: 80,
-            token: token,
-          );
-          // 写入本地仓库做缓存（以 srv_ 前缀避免与本地 id 冲突）
-          for (final m in res.messages) {
-            final role = m['role']?.toString() ?? 'user';
-            final content = m['content']?.toString() ?? '';
-            final sid = m['id']?.toString() ?? '';
-            final ts = m['created_at'];
-            DateTime? dt;
-            if (ts is num) {
-              dt = DateTime.fromMillisecondsSinceEpoch((ts * 1000).round());
-            }
-            if (content.trim().isEmpty) continue;
-            widget.repository.addMessage(
-              widget.agent.id,
-              ChatMessage(
-                role: role,
-                content: content,
-                timestamp: dt,
-                id: sid.isNotEmpty ? 'srv_$sid' : null,
-              ),
-            );
-          }
-        }
-      } catch (_) {}
-    }
-    await widget.repository.loadMessages(widget.agent.id);
+    // 1) 先立刻展示本地缓存，避免打开空白
+    await widget.repository.loadMessages(widget.agent.id, force: true);
     if (mounted) {
-      setState(() => _messages = widget.repository.getMessages(widget.agent.id).toList());
+      setState(() {
+        _messages = widget.repository.getMessages(widget.agent.id).toList();
+        _loading = _session.isLoading(widget.agent.id);
+      });
+      _scrollToEnd();
+    }
+
+    // 进行中的发送任务：勿用云端列表覆盖本地待回复消息
+    if (_session.isLoading(widget.agent.id)) return;
+
+    // 2) 登录态后台拉取云端，成功后再合并刷新（失败保留本地）
+    final token = AuthRepository.instance.currentUser?.token;
+    if (token == null || token.isEmpty) return;
+
+    try {
+      final convId = await widget.api.getOrCreateConversationId(
+        agentId: widget.agent.id,
+        title: widget.agent.name,
+        token: token,
+      );
+      if (convId == null || convId.isEmpty) return;
+      if (_session.isLoading(widget.agent.id)) return;
+      final res = await widget.api.listConversationMessages(
+        conversationId: convId,
+        limit: 80,
+        token: token,
+      );
+      if (res.messages.isEmpty) return;
+      if (_session.isLoading(widget.agent.id)) return;
+
+      final serverMsgs = <ChatMessage>[];
+      for (final m in res.messages) {
+        final role = m['role']?.toString() ?? 'user';
+        final content = m['content']?.toString() ?? '';
+        final sid = m['id']?.toString() ?? '';
+        final ts = m['created_at'];
+        DateTime? dt;
+        if (ts is num) {
+          dt = DateTime.fromMillisecondsSinceEpoch((ts * 1000).round());
+        }
+        if (content.trim().isEmpty) continue;
+        serverMsgs.add(
+          ChatMessage(
+            role: role,
+            content: content,
+            timestamp: dt,
+            id: sid.isNotEmpty ? 'srv_$sid' : null,
+          ),
+        );
+      }
+      if (serverMsgs.isEmpty) return;
+
+      final local = widget.repository.getMessages(widget.agent.id);
+      final localPending = local.where((m) => !m.id.startsWith('srv_')).toList();
+      final byId = <String, ChatMessage>{};
+      for (final m in serverMsgs) {
+        byId[m.id] = m;
+      }
+      for (final m in localPending) {
+        byId.putIfAbsent(m.id, () => m);
+      }
+      final merged = byId.values.toList()
+        ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      await widget.repository.replaceMessages(widget.agent.id, merged);
+      if (mounted && !_session.isLoading(widget.agent.id)) {
+        setState(() {
+          _messages = widget.repository.getMessages(widget.agent.id).toList();
+        });
+        _scrollToEnd();
+      }
+    } catch (_) {
+      // 后端不可达时保持本地已展示的记录
     }
   }
 
@@ -178,10 +260,15 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   @override
   void dispose() {
     UserSyncScheduler.syncEpoch.removeListener(_onSyncEpoch);
+    final agentId = widget.agent.id;
+    _session.loadingOf(agentId).removeListener(_onSessionChanged);
+    _session.revisionOf(agentId).removeListener(_onSessionChanged);
+    _session.queueDepthOf(agentId).removeListener(_onSessionChanged);
     _recordingTimer?.cancel();
     _recordingStreamSub?.cancel();
     _armedMicSub?.cancel();
-    _asrStreamService.stopAndGetFinal(cancel: true);
+    // 仅清理 ASR；进行中的聊天请求由 ChatSessionService 托管，dispose 不 cancel
+    unawaited(_asrStreamService.stopAndGetFinal(cancel: true));
     _waveController.dispose();
     _inputController.dispose();
     _scrollController.dispose();
@@ -266,6 +353,10 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
 
   Future<void> _toggleVoiceMode() async {
     final next = !_voiceInputMode;
+    if (next) {
+      await _ensureAsrReadyOrHint();
+      if (!_asrConfigured) return;
+    }
     setState(() => _voiceInputMode = next);
     if (next) {
       await _armVoiceInputIfNeeded();
@@ -398,112 +489,142 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     );
   }
 
-  Future<void> _showAssistantSubscriptionRequired() async {
-    if (!mounted) return;
-    final goSubscribe = await showDialog<bool>(
-      context: context,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return AlertDialog(
-          backgroundColor: theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
-          surfaceTintColor: Colors.transparent,
-          title: const Text('需要助理服务订阅'),
-          content: const Text('你当前未开通助理服务，订阅后即可与智能体连续对话。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('稍后再说'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('去订阅'),
-            ),
-          ],
-        );
-      },
-    );
-    if (goSubscribe == true && mounted) {
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const ValueAddedPage()),
-      );
-    }
-  }
-
   Future<void> _send() async {
     final text = _inputController.text.trim();
+    final atts = List<ChatAttachment>.from(_pendingAttachments);
     _inputController.clear();
-    await _sendText(text);
+    setState(() => _pendingAttachments.clear());
+    await _sendText(text, attachments: atts);
   }
 
-  Future<void> _sendText(String rawText) async {
+  Future<void> _sendText(
+    String rawText, {
+    List<ChatAttachment> attachments = const [],
+  }) async {
     final text = rawText.trim();
-    if (text.isEmpty || _loading) return;
-    final canChat = await SubscriptionAccessService.hasAssistantChatAccess();
-    if (!mounted) return;
-    if (!canChat) {
-      await _showAssistantSubscriptionRequired();
-      return;
-    }
+    if (text.isEmpty && attachments.isEmpty) return;
 
-    final userMsg = ChatMessage(role: 'user', content: text);
-    widget.repository.addMessage(widget.agent.id, userMsg);
-    setState(() {
-      _messages = widget.repository.getMessages(widget.agent.id).toList();
-      _loading = true;
-    });
-    _scrollToEnd();
+    // 思考中也可入队；Session 按时间顺序处理
+    await _session.send(
+      agent: widget.agent,
+      repository: widget.repository,
+      api: widget.api,
+      userText: text,
+      topicRef: _topicRef,
+      attachments: attachments,
+    );
+  }
 
-    try {
-      final history = _messages
-          .where((m) => m.id != userMsg.id)
-          .map<Map<String, String>>((m) => {'role': m.role, 'content': m.content})
-          .toList();
-      // 已登录则一律走后端 ABP + 工具（与是否「白板自动创建」无关）；未登录仍用 agent 名称/职能的普通 system prompt
-      final token = AuthRepository.instance.currentUser?.token;
-      final useBackend = token != null && token.isNotEmpty;
-      final mindNodeId = widget.currentMindNodeId ?? widget.agent.mindNodeId;
-      final reply = await widget.api.sendMessage(
-        agentId: widget.agent.id,
-        userMessage: text,
-        history: history,
-        agentName: widget.agent.name,
-        agentRole: widget.agent.role,
-        useBackendSystemPrompt: useBackend,
-        currentMindNodeId: mindNodeId,
-        token: token,
+  void _interruptThinking() {
+    final ok = _session.cancelCurrent(widget.agent.id);
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('当前没有可打断的请求'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
-      // 工具在服务端写入日程/白板等：仅同步结构化数据（mind/schedule），避免旧 assistant 同步包覆盖聊天消息。
-      if (useBackend) {
-        try {
-          await UserSyncService(baseUrl: ApiConfig.authApiBaseUrl).pull(
-            token,
-            bypassSubscriptionCheck: true,
-          );
-          await MindRepository.instance.reloadFromDisk();
-          await ScheduleEventStore.instance.reloadFromDisk();
-          UserSyncScheduler.syncEpoch.value++;
-        } catch (_) {}
+    }
+  }
+
+  Future<void> _showAttachMenu() async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: colorScheme.surfaceContainerHigh,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('相册'),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: Text(_isDesktop ? '选择图片' : '拍照'),
+              onTap: () => Navigator.pop(ctx, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined),
+              title: Text(_isDesktop ? '选择视频' : '拍视频'),
+              onTap: () => Navigator.pop(ctx, 'video'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file_rounded),
+              title: const Text('文件'),
+              subtitle: const Text('PDF / Markdown / Word / Excel / 图片等'),
+              onTap: () => Navigator.pop(ctx, 'file'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    try {
+      List<ChatAttachment> picked = [];
+      switch (choice) {
+        case 'gallery':
+          picked = await _attachmentPicker.pickFromGallery();
+          break;
+        case 'camera':
+          final one = await _attachmentPicker.takePhoto();
+          if (one != null) picked = [one];
+          break;
+        case 'video':
+          final one = await _attachmentPicker.takeVideo();
+          if (one != null) picked = [one];
+          break;
+        case 'file':
+          picked = await _attachmentPicker.pickDocuments();
+          break;
       }
-      final assistantMsg = ChatMessage(role: 'assistant', content: reply);
-      widget.repository.addMessage(widget.agent.id, assistantMsg);
-      if (mounted) {
-        setState(() {
-          _messages = widget.repository.getMessages(widget.agent.id).toList();
-          _loading = false;
-        });
-        _scrollToEnd();
-      }
+      if (!mounted || picked.isEmpty) return;
+      setState(() {
+        for (final a in picked) {
+          if (a.kind == ChatAttachmentKind.unsupported) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('${a.name}：${a.previewHint ?? '不支持'}'),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+            continue;
+          }
+          if (_pendingAttachments.length >= ChatAttachmentPicker.maxAttachments) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('最多添加 6 个附件'),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+            break;
+          }
+          _pendingAttachments.add(a);
+        }
+      });
     } catch (e) {
-      final errMsg = ChatMessage(role: 'assistant', content: '请求失败：$e');
-      widget.repository.addMessage(widget.agent.id, errMsg);
       if (mounted) {
-        setState(() {
-          _messages = widget.repository.getMessages(widget.agent.id).toList();
-          _loading = false;
-        });
-        _scrollToEnd();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('选择附件失败: $e'), behavior: SnackBarBehavior.floating),
+        );
       }
     }
+  }
+
+  void _removeAttachment(String id) {
+    setState(() => _pendingAttachments.removeWhere((a) => a.id == id));
+  }
+
+  void _clearTopicRef() {
+    setState(() => _topicRef = null);
   }
 
   void _scrollToEnd() {
@@ -523,13 +644,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   void _onHoldToTalkPanStart(DragStartDetails details) {
     if (_loading) return;
     if (!_asrConfigured) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先配置后端 ASR 后使用语音输入'),
-          duration: Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      unawaited(_ensureAsrReadyOrHint());
       return;
     }
     _holdToTalkStartGlobalY = details.globalPosition.dy;
@@ -569,13 +684,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   void _onHoldToTalkPointerDown(PointerDownEvent event) {
     if (_loading) return;
     if (!_asrConfigured) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先配置后端 ASR 后使用语音输入'),
-          duration: Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      unawaited(_ensureAsrReadyOrHint());
       return;
     }
     _holdToTalkStartGlobalY = event.position.dy;
@@ -793,13 +902,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   void _onVoiceLongPressStart() {
     if (_loading) return;
     if (!_asrConfigured) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('请先配置后端 ASR 后使用语音输入'),
-          duration: Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      unawaited(_ensureAsrReadyOrHint());
       return;
     }
     setState(() {
@@ -1038,7 +1141,6 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                                 overflow: TextOverflow.ellipsis,
                                 style: theme.textTheme.bodyLarge?.copyWith(
                                   color: look.mainText,
-                                  fontSize: 15,
                                   fontWeight: FontWeight.w600,
                                   height: 1.35,
                                   shadows: look.mainTextShadows,
@@ -1143,6 +1245,8 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                   itemCount: _messages.length + (_loading ? 1 : 0),
                   itemBuilder: (context, index) {
                     if (index == _messages.length) {
+                      final queueHint =
+                          _queueDepth > 0 ? ' · 排队 $_queueDepth 条' : '';
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 8),
                         child: Row(
@@ -1160,10 +1264,33 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                               ),
                             ),
                             const SizedBox(width: 12),
-                            Text(
-                              '正在思考…',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
+                            Expanded(
+                              child: Text(
+                                '正在思考…$queueHint',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: _interruptThinking,
+                              icon: Icon(
+                                Icons.stop_circle_outlined,
+                                size: 18,
+                                color: colorScheme.error,
+                              ),
+                              label: Text(
+                                '打断',
+                                style: TextStyle(
+                                  color: colorScheme.error,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              style: TextButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
                               ),
                             ),
                           ],
@@ -1182,11 +1309,20 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                   },
                 ),
               ),
-              if (!_selectionMode)
+              if (!_selectionMode) ...[
+                if (_topicRef != null || _pendingAttachments.isNotEmpty)
+                  _ComposerContextStrip(
+                    topicRef: _topicRef,
+                    attachments: _pendingAttachments,
+                    onClearTopic: _clearTopicRef,
+                    onRemoveAttachment: _removeAttachment,
+                  ),
                 _ChatInputBar(
                   inputController: _inputController,
                   loading: _loading,
+                  hasPendingAttachments: _pendingAttachments.isNotEmpty,
                   onSend: _send,
+                  onAttach: _showAttachMenu,
                   voiceInputMode: _voiceInputMode,
                   asrConfigured: _asrConfigured,
                   isDesktop: _isDesktop,
@@ -1204,6 +1340,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                   onHoldToTalkPointerUp: _onHoldToTalkPointerUp,
                   onHoldToTalkPointerCancel: _onHoldToTalkPointerCancel,
                 ),
+              ],
             ],
           ),
           if (_isRecording) _buildRecordingOverlay(),
@@ -1213,11 +1350,329 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   }
 }
 
+class _ComposerContextStrip extends StatelessWidget {
+  const _ComposerContextStrip({
+    required this.topicRef,
+    required this.attachments,
+    required this.onClearTopic,
+    required this.onRemoveAttachment,
+  });
+
+  final MindTopicRef? topicRef;
+  final List<ChatAttachment> attachments;
+  final VoidCallback onClearTopic;
+  final void Function(String id) onRemoveAttachment;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (topicRef != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+              decoration: BoxDecoration(
+                color: cs.primary.withOpacity(0.08),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: cs.outline.withOpacity(0.14)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.account_tree_outlined, size: 16, color: cs.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '话题引用 · ${topicRef!.displayLabel}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onSurface,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onClearTopic,
+                    tooltip: '关闭引用',
+                    icon: Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: cs.onSurfaceVariant,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  ),
+                ],
+              ),
+            ),
+          if (attachments.isNotEmpty)
+            SizedBox(
+              height: 64,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: attachments.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 8),
+                itemBuilder: (context, i) {
+                  final a = attachments[i];
+                  return _AttachmentChip(
+                    attachment: a,
+                    onRemove: () => onRemoveAttachment(a.id),
+                    onOpen: () => _openLocalPath(
+                      context,
+                      a.path,
+                      fallbackBytes: a.bytes,
+                      mime: a.mime,
+                      name: a.name,
+                      isImage: a.isImage,
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachmentChip extends StatelessWidget {
+  const _AttachmentChip({
+    required this.attachment,
+    required this.onRemove,
+    this.onOpen,
+  });
+
+  final ChatAttachment attachment;
+  final VoidCallback onRemove;
+  final VoidCallback? onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    Widget thumb;
+    if (attachment.isImage &&
+        (attachment.bytes != null ||
+            (attachment.path != null && File(attachment.path!).existsSync()))) {
+      final bytes = attachment.bytes;
+      thumb = ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: bytes != null
+            ? Image.memory(bytes, width: 48, height: 48, fit: BoxFit.cover)
+            : Image.file(
+                File(attachment.path!),
+                width: 48,
+                height: 48,
+                fit: BoxFit.cover,
+              ),
+      );
+    } else {
+      IconData icon = Icons.insert_drive_file_outlined;
+      if (attachment.isVideo) icon = Icons.videocam_outlined;
+      if (attachment.kind == ChatAttachmentKind.textDoc ||
+          attachment.kind == ChatAttachmentKind.binaryDoc) {
+        icon = Icons.description_outlined;
+      }
+      thumb = Container(
+        width: 48,
+        height: 48,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: cs.onSurface.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, size: 20, color: cs.onSurfaceVariant),
+      );
+    }
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onOpen,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: 132,
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: cs.onSurface.withOpacity(0.05),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: cs.outline.withOpacity(0.14)),
+              ),
+              child: Row(
+                children: [
+                  thumb,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          attachment.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelMedium,
+                        ),
+                        Text(
+                          attachment.previewHint ?? '点击打开',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          right: -4,
+          top: -4,
+          child: Material(
+            color: cs.errorContainer,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onRemove,
+              child: Padding(
+                padding: const EdgeInsets.all(2),
+                child: Icon(Icons.close, size: 14, color: cs.onErrorContainer),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+Future<void> _openLocalPath(
+  BuildContext context,
+  String? path, {
+  Uint8List? fallbackBytes,
+  String? mime,
+  String? name,
+  bool isImage = false,
+}) async {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  final p = path?.trim() ?? '';
+  if (p.isNotEmpty && await File(p).exists()) {
+    final result = await OpenFilex.open(p);
+    if (result.type == ResultType.done) return;
+    if (isImage && context.mounted) {
+      await _showImagePreviewDialog(
+        context,
+        path: p,
+        bytes: fallbackBytes,
+        title: name ?? '图片',
+      );
+      return;
+    }
+    messenger?.showSnackBar(
+      SnackBar(
+        content: Text(
+          result.message.isNotEmpty ? result.message : '无法打开该文件',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    return;
+  }
+  if (isImage && fallbackBytes != null && fallbackBytes.isNotEmpty && context.mounted) {
+    await _showImagePreviewDialog(
+      context,
+      bytes: fallbackBytes,
+      title: name ?? '图片',
+    );
+    return;
+  }
+  messenger?.showSnackBar(
+    const SnackBar(
+      content: Text('文件已不可用（可能已被清理）'),
+      behavior: SnackBarBehavior.floating,
+    ),
+  );
+}
+
+Future<void> _showImagePreviewDialog(
+  BuildContext context, {
+  String? path,
+  Uint8List? bytes,
+  required String title,
+}) async {
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) {
+      Widget image;
+      if (bytes != null) {
+        image = InteractiveViewer(child: Image.memory(bytes));
+      } else if (path != null && File(path).existsSync()) {
+        image = InteractiveViewer(child: Image.file(File(path)));
+      } else {
+        image = const Center(child: Text('无法预览'));
+      }
+      return Dialog(
+        insetPadding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(ctx).textTheme.titleSmall,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+            ),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.7,
+                maxWidth: MediaQuery.of(ctx).size.width,
+              ),
+              child: image,
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 class _ChatInputBar extends StatelessWidget {
   const _ChatInputBar({
     required this.inputController,
     required this.loading,
+    required this.hasPendingAttachments,
     required this.onSend,
+    this.onAttach,
     required this.voiceInputMode,
     required this.asrConfigured,
     required this.isDesktop,
@@ -1238,7 +1693,9 @@ class _ChatInputBar extends StatelessWidget {
 
   final TextEditingController inputController;
   final bool loading;
+  final bool hasPendingAttachments;
   final VoidCallback onSend;
+  final VoidCallback? onAttach;
   final bool voiceInputMode;
   final bool asrConfigured;
   final bool isDesktop;
@@ -1256,29 +1713,123 @@ class _ChatInputBar extends StatelessWidget {
   final void Function(PointerUpEvent)? onHoldToTalkPointerUp;
   final void Function(PointerCancelEvent)? onHoldToTalkPointerCancel;
 
-  static final _inputBorder = OutlineInputBorder(
-    borderRadius: BorderRadius.circular(20),
-    borderSide: BorderSide.none,
-  );
+  static const double _shellRadius = 22;
+  static const double _actionSize = 38;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final ext = theme.extension<HibiThemeExtension>();
+    final astral = ext?.themeId == AppThemeId.astralPhantasm;
+    final isDark = theme.brightness == Brightness.dark;
+    final shellFill = isDark
+        ? Color.alphaBlend(
+            Colors.white.withOpacity(0.10),
+            colorScheme.surfaceContainerHighest,
+          )
+        : Color.alphaBlend(
+            Colors.white.withOpacity(0.92),
+            colorScheme.surface,
+          );
 
-    return ClipRect(
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-          decoration: BoxDecoration(
-            color: colorScheme.surface.withOpacity(0.5),
+    return Material(
+      color: colorScheme.surface.withOpacity(isDark ? 0.92 : 0.96),
+      elevation: 0,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+        decoration: BoxDecoration(
+          border: Border(
+            top: BorderSide(color: colorScheme.outline.withOpacity(0.28)),
           ),
-          child: SafeArea(
-            top: false,
-            child: voiceInputMode
-                ? _buildVoiceInput(context, theme, colorScheme)
-                : _buildTextInput(context, theme, colorScheme),
+        ),
+        child: SafeArea(
+          top: false,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: shellFill,
+              borderRadius: BorderRadius.circular(astral ? 24 : _shellRadius),
+              border: Border.all(
+                color: isRecording
+                    ? colorScheme.primary.withOpacity(0.7)
+                    : colorScheme.outline.withOpacity(isDark ? 0.45 : 0.35),
+                width: isRecording ? 1.4 : 1.1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(isDark ? 0.28 : 0.06),
+                  blurRadius: 16,
+                  offset: const Offset(0, 3),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(6, 5, 6, 5),
+              child: voiceInputMode
+                  ? _buildVoiceInput(context, theme, colorScheme)
+                  : _buildTextInput(context, theme, colorScheme),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ghostIcon({
+    required IconData icon,
+    required String tooltip,
+    VoidCallback? onPressed,
+    required ColorScheme colorScheme,
+  }) {
+    final enabled = onPressed != null;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: colorScheme.onSurface.withOpacity(enabled ? 0.08 : 0.04),
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: onPressed,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: _actionSize,
+            height: _actionSize,
+            child: Icon(
+              icon,
+              size: 22,
+              color: colorScheme.onSurface.withOpacity(enabled ? 0.92 : 0.35),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _primaryAction({
+    required IconData icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    required ColorScheme colorScheme,
+    required bool emphasized,
+  }) {
+    final enabled = onPressed != null;
+    final bg = emphasized && enabled
+        ? colorScheme.primary
+        : colorScheme.onSurface.withOpacity(enabled ? 0.12 : 0.06);
+    final fg = emphasized && enabled
+        ? colorScheme.onPrimary
+        : colorScheme.onSurface.withOpacity(enabled ? 0.9 : 0.38);
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: bg,
+        shape: const CircleBorder(),
+        child: InkWell(
+          onTap: onPressed,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: _actionSize,
+            height: _actionSize,
+            child: Icon(icon, size: 20, color: fg),
           ),
         ),
       ),
@@ -1290,21 +1841,34 @@ class _ChatInputBar extends StatelessWidget {
     ThemeData theme,
     ColorScheme colorScheme,
   ) {
-    // 全平台统一：按住说话、松手发送、上划取消
     final usePointer = onHoldToTalkPointerDown != null &&
         onHoldToTalkPointerMove != null &&
         onHoldToTalkPointerUp != null &&
         onHoldToTalkPointerCancel != null;
+    final holdChild = Container(
+      height: 44,
+      alignment: Alignment.center,
+      child: AnimatedDefaultTextStyle(
+        duration: const Duration(milliseconds: 160),
+        style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+          color: isRecording ? colorScheme.primary : colorScheme.onSurfaceVariant,
+          fontWeight: isRecording ? FontWeight.w600 : FontWeight.w500,
+          letterSpacing: 0.2,
+        ),
+        child: Text(isRecording ? '松开发送 · 上滑取消' : '按住 说话'),
+      ),
+    );
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        IconButton(
-          onPressed: loading ? null : onToggleVoice,
-          icon: const Icon(Icons.keyboard_rounded, size: 24),
+        _ghostIcon(
+          icon: Icons.keyboard_rounded,
           tooltip: '切换到键盘输入',
+          onPressed: onToggleVoice,
+          colorScheme: colorScheme,
         ),
         Expanded(
-          // 关键体验：用 Pointer 事件实现“按下即开始”，避免 GestureDetector 的 pan 需等待手势识别（移动阈值）才触发。
           child: usePointer
               ? Listener(
                   behavior: HitTestBehavior.opaque,
@@ -1312,47 +1876,14 @@ class _ChatInputBar extends StatelessWidget {
                   onPointerMove: onHoldToTalkPointerMove,
                   onPointerUp: onHoldToTalkPointerUp,
                   onPointerCancel: onHoldToTalkPointerCancel,
-                  child: Container(
-                    height: 44,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(22),
-                      border: isRecording
-                          ? Border.all(
-                              color: colorScheme.primary.withOpacity(0.6),
-                              width: 1.5,
-                            )
-                          : null,
-                    ),
-                    child: Text(
-                      isRecording ? '松开发送' : '按住 说话',
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: isRecording
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
+                  child: holdChild,
                 )
               : GestureDetector(
                   onLongPressStart: (_) => onVoiceLongPressStart(),
-                  onLongPressMoveUpdate: (details) => onVoiceLongPressMove(details),
+                  onLongPressMoveUpdate: (details) =>
+                      onVoiceLongPressMove(details),
                   onLongPressEnd: (_) => onVoiceLongPressEnd(),
-                  child: Container(
-                    height: 44,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: colorScheme.surfaceContainerHighest.withOpacity(0.5),
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                    child: Text(
-                      '按住 说话',
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
+                  child: holdChild,
                 ),
         ),
       ],
@@ -1364,65 +1895,79 @@ class _ChatInputBar extends StatelessWidget {
     ThemeData theme,
     ColorScheme colorScheme,
   ) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        IconButton.filled(
-          onPressed: loading ? null : onToggleVoice,
-          icon: Icon(
-            voiceInputMode ? Icons.keyboard_rounded : Icons.mic_rounded,
-            size: 20,
-          ),
-          style: IconButton.styleFrom(
-            minimumSize: const Size(40, 40),
-            padding: EdgeInsets.zero,
-          ),
-          tooltip: asrConfigured
-              ? (voiceInputMode ? '切换到键盘' : '语音输入')
-              : '语音输入（需配置）',
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: TextField(
-            controller: inputController,
-            maxLines: 4,
-            minLines: 1,
-            textAlignVertical: TextAlignVertical.center,
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface,
+    return ListenableBuilder(
+      listenable: inputController,
+      builder: (context, _) {
+        final hasText = inputController.text.trim().isNotEmpty;
+        // 思考中仍可发送，消息进入队列
+        final canSend = hasText || hasPendingAttachments;
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            _ghostIcon(
+              icon: Icons.add_rounded,
+              tooltip: loading ? '添加附件（将排队发送）' : '添加附件',
+              onPressed: onAttach,
+              colorScheme: colorScheme,
             ),
-            decoration: InputDecoration(
-              hintText: '输入消息…',
-              hintStyle: theme.textTheme.bodyLarge?.copyWith(
-                color: colorScheme.onSurfaceVariant.withOpacity(0.6),
-              ),
-              isDense: true,
-              filled: true,
-              fillColor: colorScheme.surfaceContainerHighest.withOpacity(0.4),
-              border: _inputBorder,
-              enabledBorder: _inputBorder,
-              focusedBorder: _inputBorder,
-              errorBorder: _inputBorder,
-              disabledBorder: _inputBorder,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 12,
+            const SizedBox(width: 4),
+            Expanded(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 38),
+                child: TextField(
+                  controller: inputController,
+                  maxLines: 5,
+                  minLines: 1,
+                  textAlignVertical: TextAlignVertical.center,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    color: colorScheme.onSurface,
+                    height: 1.35,
+                  ),
+                  decoration: InputDecoration(
+                    hintText: '发消息或点右侧麦克风…',
+                    hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant.withOpacity(0.62),
+                    ),
+                    isDense: true,
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    errorBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 10,
+                    ),
+                  ),
+                  onSubmitted: (_) {
+                    if (canSend) onSend();
+                  },
+                ),
               ),
             ),
-            onSubmitted: (_) => onSend(),
-          ),
-        ),
-        const SizedBox(width: 6),
-        IconButton.filled(
-          onPressed: loading ? null : onSend,
-          icon: const Icon(Icons.send_rounded, size: 20),
-          style: IconButton.styleFrom(
-            minimumSize: const Size(40, 40),
-            padding: EdgeInsets.zero,
-          ),
-          tooltip: '发送',
-        ),
-      ],
+            const SizedBox(width: 4),
+            _primaryAction(
+              icon: Icons.mic_rounded,
+              tooltip: asrConfigured
+                  ? '语音输入（按住说话）'
+                  : '语音输入（请先在智能体配置中填写 ASR）',
+              onPressed: onToggleVoice,
+              colorScheme: colorScheme,
+              emphasized: false,
+            ),
+            const SizedBox(width: 6),
+            _primaryAction(
+              icon: Icons.arrow_upward_rounded,
+              tooltip: loading ? '排队发送' : '发送',
+              onPressed: canSend ? onSend : null,
+              colorScheme: colorScheme,
+              emphasized: canSend,
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1447,9 +1992,72 @@ class _MessageBubble extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isUser = message.isUser;
+    final onFg = isUser ? colorScheme.onPrimary : colorScheme.onSurface;
+    final onFgMuted = onFg.withOpacity(0.78);
+
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (message.topicLabel != null && message.topicLabel!.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.account_tree_outlined, size: 14, color: onFgMuted),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    message.topicLabel!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: onFgMuted,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (message.attachments.isNotEmpty)
+          Padding(
+            padding: EdgeInsets.only(
+              bottom: message.content.trim().isEmpty ? 0 : 8,
+            ),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final a in message.attachments)
+                  _MessageAttachmentTile(
+                    attachment: a,
+                    isUser: isUser,
+                    onOpen: () => _openLocalPath(
+                      context,
+                      a.path,
+                      name: a.name,
+                      mime: a.mime,
+                      isImage: a.isImage,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (message.content.trim().isNotEmpty)
+          Text(
+            message.content,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: onFg,
+              height: 1.4,
+            ),
+          ),
+      ],
+    );
 
     Widget bubble = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
         color: isUser
             ? colorScheme.primary.withOpacity(0.9)
@@ -1461,17 +2069,13 @@ class _MessageBubble extends StatelessWidget {
           bottomRight: Radius.circular(isUser ? 4 : 6),
         ),
         border: Border.all(
-          color: selected ? colorScheme.primary : colorScheme.outline.withOpacity(0.2),
+          color: selected
+              ? colorScheme.primary
+              : colorScheme.outline.withOpacity(0.2),
           width: selected ? 2 : 0.5,
         ),
       ),
-      child: Text(
-        message.content,
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: isUser ? colorScheme.onPrimary : colorScheme.onSurface,
-          height: 1.4,
-        ),
-      ),
+      child: body,
     );
 
     if (onLongPress != null || onTap != null) {
@@ -1486,7 +2090,8 @@ class _MessageBubble extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+        mainAxisAlignment:
+            isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (selectionMode) ...[
@@ -1494,7 +2099,9 @@ class _MessageBubble extends StatelessWidget {
               padding: const EdgeInsets.only(right: 8, top: 10),
               child: Icon(
                 selected ? Icons.check_circle : Icons.circle_outlined,
-                color: selected ? colorScheme.primary : colorScheme.onSurfaceVariant,
+                color: selected
+                    ? colorScheme.primary
+                    : colorScheme.onSurfaceVariant,
                 size: 22,
               ),
             ),
@@ -1503,7 +2110,11 @@ class _MessageBubble extends StatelessWidget {
             CircleAvatar(
               radius: 18,
               backgroundColor: colorScheme.primary.withOpacity(0.6),
-              child: Icon(Icons.smart_toy_rounded, size: 20, color: colorScheme.onPrimary),
+              child: Icon(
+                Icons.smart_toy_rounded,
+                size: 20,
+                color: colorScheme.onPrimary,
+              ),
             ),
           if (!isUser && !selectionMode) const SizedBox(width: 10),
           Flexible(child: bubble),
@@ -1512,10 +2123,121 @@ class _MessageBubble extends StatelessWidget {
             CircleAvatar(
               radius: 18,
               backgroundColor: colorScheme.primary.withOpacity(0.9),
-              child: Icon(Icons.person_rounded, size: 20, color: colorScheme.onPrimary),
+              child: Icon(
+                Icons.person_rounded,
+                size: 20,
+                color: colorScheme.onPrimary,
+              ),
             ),
         ],
       ),
+    );
+  }
+}
+
+class _MessageAttachmentTile extends StatelessWidget {
+  const _MessageAttachmentTile({
+    required this.attachment,
+    required this.isUser,
+    required this.onOpen,
+  });
+
+  final ChatMessageAttachment attachment;
+  final bool isUser;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final fg = isUser ? cs.onPrimary : cs.onSurface;
+    final muted = fg.withOpacity(0.8);
+    final path = attachment.path?.trim() ?? '';
+    final hasFile = path.isNotEmpty && File(path).existsSync();
+
+    Widget thumb;
+    if (attachment.isImage && hasFile) {
+      thumb = ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.file(
+          File(path),
+          width: 148,
+          height: 110,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _filePlaceholder(
+            icon: Icons.broken_image_outlined,
+            fg: muted,
+          ),
+        ),
+      );
+    } else {
+      IconData icon = Icons.insert_drive_file_outlined;
+      if (attachment.isVideo) icon = Icons.videocam_outlined;
+      if (attachment.kind == 'textDoc' || attachment.kind == 'binaryDoc') {
+        icon = Icons.description_outlined;
+      }
+      if (attachment.isImage) icon = Icons.image_outlined;
+      thumb = _filePlaceholder(icon: icon, fg: muted, wide: true);
+    }
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(12),
+        child: Ink(
+          decoration: BoxDecoration(
+            color: fg.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: fg.withOpacity(0.14)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              thumb,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      hasFile ? Icons.open_in_new_rounded : Icons.link_off_rounded,
+                      size: 12,
+                      color: muted,
+                    ),
+                    const SizedBox(width: 4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 120),
+                      child: Text(
+                        attachment.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: fg,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _filePlaceholder({
+    required IconData icon,
+    required Color fg,
+    bool wide = false,
+  }) {
+    return Container(
+      width: wide ? 148 : 56,
+      height: wide ? 72 : 56,
+      alignment: Alignment.center,
+      child: Icon(icon, size: 28, color: fg),
     );
   }
 }

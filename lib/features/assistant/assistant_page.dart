@@ -6,9 +6,9 @@ import '../auth/login_page.dart';
 import '../auth/models/auth_user.dart';
 import '../auth/services/auth_repository.dart';
 import '../auth/services/user_sync_scheduler.dart';
-import '../profile/subscription_access_service.dart';
 import '../profile/value_added_page.dart';
 import 'models/agent.dart';
+import 'models/hibi_assistant.dart';
 import 'services/assistant_api.dart';
 import 'services/assistant_repository.dart';
 import 'services/http_assistant_api.dart';
@@ -24,17 +24,13 @@ class AssistantPage extends StatefulWidget {
 
 class _AssistantPageState extends State<AssistantPage> {
   final AssistantRepository _repo = AssistantRepository();
-  bool _assistantSubscribed = false;
-  bool _checkingSubscription = true;
 
   void _onSyncEpoch() {
     _repo.reloadFromDisk().then((_) {
       if (mounted) _refreshAgents();
     });
-    _refreshAssistantSubscription();
   }
 
-  void _onUserChanged() => _refreshAssistantSubscription(forceRefresh: true);
   late final AssistantApi _api = ApiConfig.isAssistantApiConfigured
       ? HttpAssistantApi(baseUrl: ApiConfig.assistantApiBaseUrl)
       : PlaceholderAssistantApi();
@@ -44,43 +40,19 @@ class _AssistantPageState extends State<AssistantPage> {
   void initState() {
     super.initState();
     UserSyncScheduler.syncEpoch.addListener(_onSyncEpoch);
-    AuthRepository.instance.currentUserNotifier.addListener(_onUserChanged);
     _repo.ensureLoaded().then((_) {
       if (mounted) _refreshAgents();
     });
-    _refreshAssistantSubscription();
   }
 
   @override
   void dispose() {
     UserSyncScheduler.syncEpoch.removeListener(_onSyncEpoch);
-    AuthRepository.instance.currentUserNotifier.removeListener(_onUserChanged);
     super.dispose();
   }
 
   void _refreshAgents() {
     setState(() => _agents = _repo.agents);
-  }
-
-  Future<void> _refreshAssistantSubscription(
-      {bool forceRefresh = false}) async {
-    final user = AuthRepository.instance.currentUser;
-    if (user == null) {
-      if (mounted) {
-        setState(() {
-          _assistantSubscribed = false;
-          _checkingSubscription = false;
-        });
-      }
-      return;
-    }
-    final hasAccess = await SubscriptionAccessService.hasAssistantChatAccess(
-        forceRefresh: forceRefresh);
-    if (!mounted) return;
-    setState(() {
-      _assistantSubscribed = hasAccess;
-      _checkingSubscription = false;
-    });
   }
 
   void _openSubscriptionPage() {
@@ -179,6 +151,7 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   Future<void> _renameAgent(Agent agent) async {
+    if (!agent.canEditName) return;
     final name = await showDialog<String>(
       context: context,
       builder: (ctx) {
@@ -223,6 +196,7 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   Future<void> _editRoleAgent(Agent agent) async {
+    if (!agent.canEditRole) return;
     final theme = Theme.of(context);
     final hintStyle = theme.textTheme.bodyMedium?.copyWith(
       color: theme.colorScheme.onSurfaceVariant.withOpacity(0.65),
@@ -280,6 +254,7 @@ class _AssistantPageState extends State<AssistantPage> {
   }
 
   Future<void> _deleteAgent(Agent agent) async {
+    if (!agent.canDelete) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -333,15 +308,6 @@ class _AssistantPageState extends State<AssistantPage> {
       builder: (context, user, _) {
         if (user == null) {
           return _buildLoginRequired(context);
-        }
-        if (_checkingSubscription) {
-          return const Scaffold(
-            backgroundColor: Colors.transparent,
-            body: Center(child: CircularProgressIndicator()),
-          );
-        }
-        if (!_assistantSubscribed) {
-          return _buildSubscriptionRequired(context);
         }
         return _buildAssistantContent(context);
       },
@@ -401,66 +367,25 @@ class _AssistantPageState extends State<AssistantPage> {
     );
   }
 
-  Widget _buildSubscribeMiniButton(BuildContext context) {
+  /// AppBar 右侧 TextButton 统一样式（新建助理 / 订阅）
+  ButtonStyle _appBarActionButtonStyle(BuildContext context) {
     final theme = Theme.of(context);
+    return TextButton.styleFrom(
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      textStyle:
+          theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+    );
+  }
+
+  Widget _buildSubscribeMiniButton(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: TextButton.icon(
         onPressed: _openSubscriptionPage,
-        icon: const Icon(Icons.workspace_premium_outlined, size: 16),
+        icon: const Icon(Icons.workspace_premium_outlined, size: 18),
         label: const Text('订阅'),
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          textStyle:
-              theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSubscriptionRequired(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        backgroundColor: theme.appBarTheme.backgroundColor,
-        surfaceTintColor: Colors.transparent,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        title: const Text('助理'),
-        actions: [_buildSubscribeMiniButton(context)],
-      ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.lock_outline, size: 60, color: colorScheme.outline),
-              const SizedBox(height: 16),
-              Text(
-                '未开通助理服务',
-                style: theme.textTheme.titleLarge
-                    ?.copyWith(color: colorScheme.onSurface),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                '开通后可与智能体持续对话，并解锁完整助理能力。',
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium
-                    ?.copyWith(color: colorScheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 18),
-              OutlinedButton.icon(
-                onPressed: _openSubscriptionPage,
-                icon: const Icon(Icons.workspace_premium_outlined, size: 18),
-                label: const Text('去订阅'),
-              ),
-            ],
-          ),
-        ),
+        style: _appBarActionButtonStyle(context),
       ),
     );
   }
@@ -480,8 +405,9 @@ class _AssistantPageState extends State<AssistantPage> {
         actions: [
           TextButton.icon(
             onPressed: _createAgent,
-            icon: const Icon(Icons.smart_toy_outlined, size: 19),
+            icon: const Icon(Icons.smart_toy_outlined, size: 18),
             label: const Text('新建助理'),
+            style: _appBarActionButtonStyle(context),
           ),
           _buildSubscribeMiniButton(context),
         ],
@@ -512,36 +438,66 @@ class _AssistantPageState extends State<AssistantPage> {
               itemCount: _agents.length,
               itemBuilder: (context, index) {
                 final agent = _agents[index];
+                final skillLabels = agent.isBuiltIn
+                    ? HibiAssistant.skills.map((s) => s.label).join(' · ')
+                    : null;
                 return AppGlassStyles.listCard(
                   context,
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: colorScheme.primaryContainer,
-                      child: Icon(Icons.smart_toy,
-                          color: colorScheme.onPrimaryContainer),
+                      child: Icon(
+                        agent.isBuiltIn
+                            ? Icons.auto_awesome
+                            : Icons.smart_toy,
+                        color: colorScheme.onPrimaryContainer,
+                      ),
                     ),
-                    title: Text(agent.name),
+                    title: Row(
+                      children: [
+                        Flexible(child: Text(agent.name)),
+                        if (agent.isPinned) ...[
+                          const SizedBox(width: 6),
+                          Icon(
+                            Icons.star_rounded,
+                            size: 18,
+                            color: colorScheme.primary,
+                          ),
+                        ],
+                      ],
+                    ),
                     subtitle: Text(
-                      agent.isAutoCreated ? '项目助理 · 点击进入对话' : '点击进入对话',
+                      agent.isBuiltIn
+                          ? 'Skills：$skillLabels · 点击进入对话'
+                          : (agent.isAutoCreated
+                              ? '项目助理 · 点击进入对话'
+                              : '点击进入对话'),
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: colorScheme.onSurfaceVariant),
                     ),
-                    trailing: PopupMenuButton<String>(
-                      icon: const Icon(Icons.more_vert),
-                      onSelected: (v) {
-                        if (v == 'rename') _renameAgent(agent);
-                        if (v == 'editRole') _editRoleAgent(agent);
-                        if (v == 'delete') _deleteAgent(agent);
-                      },
-                      itemBuilder: (_) => [
-                        const PopupMenuItem(
-                            value: 'rename', child: Text('修改名称')),
-                        if (!agent.isAutoCreated)
-                          const PopupMenuItem(
-                              value: 'editRole', child: Text('修改职能')),
-                        const PopupMenuItem(value: 'delete', child: Text('删除')),
-                      ],
-                    ),
+                    trailing: agent.isBuiltIn
+                        ? Icon(
+                            Icons.lock_outline,
+                            size: 18,
+                            color: colorScheme.onSurfaceVariant,
+                          )
+                        : PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert),
+                            onSelected: (v) {
+                              if (v == 'rename') _renameAgent(agent);
+                              if (v == 'editRole') _editRoleAgent(agent);
+                              if (v == 'delete') _deleteAgent(agent);
+                            },
+                            itemBuilder: (_) => [
+                              const PopupMenuItem(
+                                  value: 'rename', child: Text('修改名称')),
+                              if (!agent.isAutoCreated)
+                                const PopupMenuItem(
+                                    value: 'editRole', child: Text('修改职能')),
+                              const PopupMenuItem(
+                                  value: 'delete', child: Text('删除')),
+                            ],
+                          ),
                     onTap: () => _openChat(agent),
                   ),
                 );

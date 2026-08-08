@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../../../config/api_config.dart';
+import '../../profile/services/agent_config_service.dart';
 
 /// 调用后端 /api/asr（豆包 ASR）上传 WAV，返回识别文本。
 class AsrService {
@@ -13,8 +14,10 @@ class AsrService {
   String get _configUrl => '$_baseUrl/api/asr/config';
   String get _asrUrl => '$_baseUrl/api/asr';
 
-  /// 是否已配置语音识别（后端 ASR_APP_KEY / ASR_ACCESS_KEY）
+  /// 是否可用：本地智能体配置 ASR，或服务端已配置 ASR。
   Future<bool> isConfigured() async {
+    final local = await AgentConfigService.activeAsrConfig();
+    if (local != null) return true;
     if (_baseUrl.isEmpty) return false;
     try {
       final res = await http.get(Uri.parse(_configUrl)).timeout(const Duration(seconds: 6));

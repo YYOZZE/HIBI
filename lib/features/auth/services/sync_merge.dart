@@ -58,6 +58,49 @@ class SyncMerge {
     return map.values.toList();
   }
 
+  /// 局域网对等同步用：按 id 合并，同一 id 取修改时间较新者（LWW）。
+  /// 时间字段优先级：updatedAt → deletedAt → startTime → endTime。
+  static List<dynamic> mergeScheduleListsByMtime(
+    List<dynamic>? a,
+    List<dynamic>? b,
+  ) {
+    final map = <String, Map<String, dynamic>>{};
+    void put(dynamic raw) {
+      if (raw is! Map) return;
+      final e = Map<String, dynamic>.from(raw);
+      final id = e['id']?.toString();
+      if (id == null || id.isEmpty) return;
+      final existing = map[id];
+      if (existing == null) {
+        map[id] = e;
+        return;
+      }
+      if (_mtimeKey(e).compareTo(_mtimeKey(existing)) >= 0) {
+        map[id] = e;
+      }
+    }
+
+    if (a != null) {
+      for (final e in a) {
+        put(e);
+      }
+    }
+    if (b != null) {
+      for (final e in b) {
+        put(e);
+      }
+    }
+    return map.values.toList();
+  }
+
+  static String _mtimeKey(Map<String, dynamic> e) {
+    for (final k in ['updatedAt', 'deletedAt', 'startTime', 'endTime']) {
+      final v = e[k]?.toString() ?? '';
+      if (v.isNotEmpty) return v;
+    }
+    return '';
+  }
+
   /// 助理：agents 按 id 合并（同 mind，无 updatedAt 时后写覆盖先写，故先 server 后 local 保留本地同 id）。
   static Map<String, dynamic> mergeAssistant(
     Map<String, dynamic>? localBundle,

@@ -17,22 +17,42 @@ class AppUpdatePage extends StatefulWidget {
 }
 
 class _AppUpdatePageState extends State<AppUpdatePage> {
+  /// 下载任务由 AppUpdateService 按 URL 持有：页面退出后下载在后台继续，
+  /// 重新进入时复用同一任务恢复进度展示，因此无需在 dispose 中取消。
   AppUpdateDownloadTask? _task;
+  bool _installing = false;
 
-  String _fmtBytes(int n) {
-    const kb = 1024.0;
-    const mb = kb * 1024;
-    const gb = mb * 1024;
-    final v = n.toDouble();
-    if (v >= gb) return '${(v / gb).toStringAsFixed(2)}GB';
-    if (v >= mb) return '${(v / mb).toStringAsFixed(1)}MB';
-    if (v >= kb) return '${(v / kb).toStringAsFixed(0)}KB';
-    return '${n}B';
+  @override
+  void initState() {
+    super.initState();
+    final url = widget.status.downloadUrlForPlatform;
+    if (!kIsWeb && (url ?? '').isNotEmpty && !Platform.isIOS) {
+      _task = AppUpdateService.instance.createDownloadTask(url!);
+    }
   }
+
+  String _fmtBytes(int n) => AppUpdateService.fmtBytes(n);
 
   String _fmtSpeed(int? bps) {
     if (bps == null || bps <= 0) return '';
     return '${_fmtBytes(bps)}/s';
+  }
+
+  Future<void> _install(String? filePath) async {
+    if (_installing) return; // 连点防护：避免重复拉起安装器
+    if (filePath == null || filePath.isEmpty) return;
+    _installing = true;
+    try {
+      await AppUpdateService.instance.downloadAndOpenInstaller(filePath);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法打开安装包：$e')),
+        );
+      }
+    } finally {
+      _installing = false;
+    }
   }
 
   Future<void> _startOrOpen() async {
@@ -40,7 +60,7 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
     if (url == null || url.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('后台未配置本平台的安装包地址，请联系管理员或前往官网下载。')),
+          const SnackBar(content: Text('发布页暂未提供本平台的安装包，请前往 GitHub 发布页下载。')),
         );
       }
       return;
@@ -49,21 +69,19 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       if (kIsWeb) return;
       if (Platform.isIOS) {
         await AppUpdateService.instance.openExternalUrl(url);
+        return;
+      }
+      final task = _task;
+      if (task == null) return;
+      final st = task.progressNotifier.value;
+      if (st.state == AppUpdateDownloadState.completed) {
+        await _install(st.filePath);
+      } else if (st.state == AppUpdateDownloadState.paused) {
+        task.resume();
+      } else if (st.state == AppUpdateDownloadState.downloading) {
+        // 下载中，无需重复触发
       } else {
-        _task ??= AppUpdateService.instance.createDownloadTask(url);
-        final st = _task!.progressNotifier.value.state;
-        if (st == AppUpdateDownloadState.completed) {
-          final p = _task!.progressNotifier.value.filePath;
-          if (p != null && p.isNotEmpty) {
-            await AppUpdateService.instance.downloadAndOpenInstaller(p);
-          }
-        } else if (st == AppUpdateDownloadState.paused) {
-          await _task!.resume();
-        } else if (st == AppUpdateDownloadState.downloading) {
-          // no-op
-        } else {
-          await _task!.start();
-        }
+        await task.start();
       }
     } catch (e) {
       if (mounted) {
@@ -115,6 +133,16 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                     fontWeight: FontWeight.w400,
                   ),
                 ),
+                if (s.assetSizeForPlatform != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    '文件大小：${_fmtBytes(s.assetSizeForPlatform!)}',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: cs.onSurfaceVariant,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 20),
                 Text(
                   '更新内容',
@@ -151,16 +179,18 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                   ),
                 ] else ...[
                   ValueListenableBuilder<AppUpdateDownloadProgress>(
-                    valueListenable: (_task ??= (hasUrl ? AppUpdateService.instance.createDownloadTask(s.downloadUrlForPlatform!) : null))
-                            ?.progressNotifier ??
+                    valueListenable: _task?.progressNotifier ??
                         ValueNotifier<AppUpdateDownloadProgress>(
                           const AppUpdateDownloadProgress(state: AppUpdateDownloadState.idle),
                         ),
                     builder: (context, p, _) {
-                      final total = p.totalBytes;
+                      // 有效总大小：优先响应的 Content-Length，未建立连接时回退 manifest 资产大小
+                      final total = AppUpdateService.effectiveTotalBytes(
+                          p.totalBytes, s.assetSizeForPlatform);
                       final frac = (total != null && total > 0) ? (p.downloadedBytes / total).clamp(0.0, 1.0) : null;
                       final state = p.state;
-                      final canStart = hasUrl && (state == AppUpdateDownloadState.idle || state == AppUpdateDownloadState.error || state == AppUpdateDownloadState.cancelled);
+                      final canStart = hasUrl && (state == AppUpdateDownloadState.idle || state == AppUpdateDownloadState.cancelled);
+                      final canRetry = hasUrl && state == AppUpdateDownloadState.error;
                       final canPause = state == AppUpdateDownloadState.downloading;
                       final canResume = state == AppUpdateDownloadState.paused;
                       final canCancel = state == AppUpdateDownloadState.downloading || state == AppUpdateDownloadState.paused;
@@ -194,30 +224,60 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                                   ),
                                 ),
                                 const SizedBox(height: 10),
-                                if (frac != null)
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(999),
-                                    child: LinearProgressIndicator(value: frac, minHeight: 8),
-                                  )
-                                else
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(999),
-                                    child: const LinearProgressIndicator(minHeight: 8),
+                                TweenAnimationBuilder<double>(
+                                  tween: Tween<double>(
+                                    begin: 0,
+                                    end: frac ?? 0,
                                   ),
+                                  duration: const Duration(milliseconds: 280),
+                                  curve: Curves.easeOutCubic,
+                                  builder: (context, animated, _) {
+                                    return ClipRRect(
+                                      borderRadius: BorderRadius.circular(999),
+                                      child: LinearProgressIndicator(
+                                        value: frac == null &&
+                                                state ==
+                                                    AppUpdateDownloadState
+                                                        .downloading
+                                            ? null
+                                            : (frac == null ? 0 : animated),
+                                        minHeight: 8,
+                                      ),
+                                    );
+                                  },
+                                ),
                                 const SizedBox(height: 10),
                                 Row(
                                   children: [
-                                    Text(
-                                      total == null
-                                          ? _fmtBytes(p.downloadedBytes)
-                                          : '${_fmtBytes(p.downloadedBytes)} / ${_fmtBytes(total)}',
-                                      style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                                    Expanded(
+                                      child: Text(
+                                        AppUpdateService.formatDownloadSizeText(
+                                          state: state,
+                                          downloadedBytes: p.downloadedBytes,
+                                          totalBytes: p.totalBytes,
+                                          manifestAssetSize: s.assetSizeForPlatform,
+                                        ),
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: cs.onSurfaceVariant,
+                                        ),
+                                      ),
                                     ),
-                                    const Spacer(),
+                                    if (frac != null) ...[
+                                      Text(
+                                        '${(frac * 100).clamp(0, 100).toStringAsFixed(0)}%',
+                                        style: theme.textTheme.labelLarge?.copyWith(
+                                          color: cs.primary,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                    ],
                                     if (state == AppUpdateDownloadState.downloading)
                                       Text(
                                         _fmtSpeed(p.speedBytesPerSec),
-                                        style: theme.textTheme.bodySmall?.copyWith(color: cs.onSurfaceVariant),
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: cs.onSurfaceVariant,
+                                        ),
                                       ),
                                   ],
                                 ),
@@ -237,25 +297,23 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                               Expanded(
                                 child: FilledButton(
                                   onPressed: canInstall
-                                      ? () async {
-                                          final fp = p.filePath;
-                                          if (fp == null || fp.isEmpty) return;
-                                          await AppUpdateService.instance.downloadAndOpenInstaller(fp);
-                                        }
-                                      : (canStart ? _startOrOpen : (canResume ? () => _task!.resume() : null)),
+                                      ? () => _install(p.filePath)
+                                      : ((canStart || canRetry || canResume) ? _startOrOpen : null),
                                   child: Text(
-                                    canInstall ? '安装' : (canResume ? '继续' : '开始下载'),
+                                    canInstall
+                                        ? '安装'
+                                        : (canResume ? '继续' : (canRetry ? '重试下载' : '开始下载')),
                                   ),
                                 ),
                               ),
                               const SizedBox(width: 10),
                               OutlinedButton(
-                                onPressed: canPause ? () => _task!.pause() : null,
+                                onPressed: canPause ? () => _task?.pause() : null,
                                 child: const Text('暂停'),
                               ),
                               const SizedBox(width: 10),
                               OutlinedButton(
-                                onPressed: canCancel ? () => _task!.cancel() : null,
+                                onPressed: canCancel ? () => _task?.cancel() : null,
                                 child: const Text('取消'),
                               ),
                             ],
@@ -268,10 +326,27 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                 if (!hasUrl) ...[
                   const SizedBox(height: 12),
                   Text(
-                    '尚未配置本平台的下载地址，请在管理后台「升级推送地址」中填写。',
+                    '暂未提供本平台的安装包，可前往 GitHub 发布页手动下载。',
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: cs.outline,
                     ),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () async {
+                      try {
+                        await AppUpdateService.instance
+                            .openExternalUrl(s.manifest.releasePageUrl);
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('无法打开发布页：$e')),
+                          );
+                        }
+                      }
+                    },
+                    icon: const Icon(Icons.open_in_new, size: 18),
+                    label: const Text('打开 GitHub 发布页'),
                   ),
                 ],
               ],

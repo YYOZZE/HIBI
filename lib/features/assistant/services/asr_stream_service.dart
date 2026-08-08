@@ -5,11 +5,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../../../config/api_config.dart';
+import '../../profile/services/agent_config_service.dart';
 
 typedef AsrTextCallback = void Function(String text);
 
 /// 豆包 ASR 流式识别：通过 WebSocket 与后端 `/api/asr/stream` 通信。
-/// 行为对齐参考项目 `Flutter_he_buddy_002_mobile` 的 `asr_stream_service.dart`。
+/// 支持附带客户端 ASR 凭据（智能体配置），否则使用服务端 .env。
 class AsrStreamService {
   WebSocket? _ws;
   StreamSubscription? _wsSub;
@@ -28,7 +29,10 @@ class AsrStreamService {
 
   String? get lastError => _lastError;
 
-  Future<bool> start({AsrTextCallback? onPartial}) async {
+  Future<bool> start({
+    AsrTextCallback? onPartial,
+    AsrClientConfig? clientAsr,
+  }) async {
     // 必须先关掉上一轮 WS（含语音模式预热、重复 start），否则旧连接仍收包会错乱 completer，表现为第二次识别无文本。
     await _safeClose();
     final wsBase = _toWsUrl(ApiConfig.assistantApiBaseUrl.trim());
@@ -47,9 +51,21 @@ class AsrStreamService {
     _preReadyBytes = 0;
     _doneCompleter = Completer<String>();
     try {
-      final url = '$wsBase/api/asr/stream';
-      debugPrint('[ASR-STREAM] connect => $url');
-      _ws = await WebSocket.connect(url);
+      final qp = <String, String>{};
+      final asr = clientAsr ?? await AgentConfigService.activeAsrConfig();
+      if (asr != null && asr.isUsable) {
+        qp['app_id'] = asr.appId.trim();
+        qp['token'] = asr.accessToken.trim();
+        qp['resource_id'] = asr.effectiveResourceId;
+      }
+      final uri = Uri.parse('$wsBase/api/asr/stream').replace(
+        queryParameters: qp.isEmpty ? null : qp,
+      );
+      debugPrint('[ASR-STREAM] connect => ${uri.replace(queryParameters: {
+            ...uri.queryParameters,
+            if (uri.queryParameters.containsKey('token')) 'token': '***',
+          })}');
+      _ws = await WebSocket.connect(uri.toString());
       _wsSub = _ws!.listen(_onEvent, onError: _onError, onDone: _onClosed);
       // 不阻塞等待 ready：与麦克风 startStream 并行时，句首音频由 sendAudio 缓冲至 ready 后顺序发出。
       debugPrint('[ASR-STREAM] ws connected (await server ready via buffer)');
@@ -63,7 +79,8 @@ class AsrStreamService {
   }
 
   void _enqueuePreReady(Uint8List chunk) {
-    while (_preReadyBytes + chunk.length > _maxPreReadyBytes && _preReadyBuffer.isNotEmpty) {
+    while (_preReadyBytes + chunk.length > _maxPreReadyBytes &&
+        _preReadyBuffer.isNotEmpty) {
       final removed = _preReadyBuffer.removeAt(0);
       _preReadyBytes -= removed.length;
     }
@@ -81,7 +98,9 @@ class AsrStreamService {
       _ws!.add(c);
     }
     if (_preReadyBuffer.isNotEmpty) {
-      debugPrint('[ASR-STREAM] flushed pre-ready chunks=${_preReadyBuffer.length} bytes=$_preReadyBytes');
+      debugPrint(
+        '[ASR-STREAM] flushed pre-ready chunks=${_preReadyBuffer.length} bytes=$_preReadyBytes',
+      );
     }
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
@@ -103,16 +122,28 @@ class AsrStreamService {
 
   /// 等待服务端 `done`；超时需覆盖后端 ASR 收尾（含豆包侧排队），不宜过短。
   Future<String> stopAndGetFinal({required bool cancel}) async {
+    final completer = _doneCompleter;
     try {
       if (_ws != null) {
-        debugPrint('[ASR-STREAM] stop cancel=$cancel chunks=$_sentChunks bytes=$_sentBytes');
-        _ws!.add(jsonEncode({'event': cancel ? 'cancel' : 'end'}));
+        debugPrint(
+          '[ASR-STREAM] stop cancel=$cancel chunks=$_sentChunks bytes=$_sentBytes',
+        );
+        try {
+          _ws!.add(jsonEncode({'event': cancel ? 'cancel' : 'end'}));
+        } catch (_) {}
       }
-      final text = await _doneCompleter!.future.timeout(
+      if (completer == null) {
+        // 未成功 start（或已 safeClose）时勿用 !，避免 Null check 噪音日志
+        await _safeClose();
+        return '';
+      }
+      final text = await completer.future.timeout(
         const Duration(seconds: 30),
         onTimeout: () => _finalText.isNotEmpty ? _finalText : _lastPartial,
       );
-      debugPrint('[ASR-STREAM] done textLen=${text.trim().length} err=${_lastError ?? ''}');
+      debugPrint(
+        '[ASR-STREAM] done textLen=${text.trim().length} err=${_lastError ?? ''}',
+      );
       await _safeClose();
       return (cancel ? '' : text).trim();
     } catch (e) {
@@ -153,17 +184,22 @@ class AsrStreamService {
       }
       if (type == 'done') {
         debugPrint('[ASR-STREAM] event=done len=${text.length}');
-        final done = text.isNotEmpty ? text : (_finalText.isNotEmpty ? _finalText : _lastPartial);
+        final done = text.isNotEmpty
+            ? text
+            : (_finalText.isNotEmpty ? _finalText : _lastPartial);
         if (!(_doneCompleter?.isCompleted ?? true)) {
           _doneCompleter!.complete(done);
         }
         return;
       }
       if (type == 'error') {
-        _lastError = text.isNotEmpty ? text : (data['message']?.toString() ?? 'ASR 流式服务错误');
+        _lastError = text.isNotEmpty
+            ? text
+            : (data['message']?.toString() ?? 'ASR 流式服务错误');
         debugPrint('[ASR-STREAM] event=error msg=$_lastError');
         if (!(_doneCompleter?.isCompleted ?? true)) {
-          _doneCompleter!.complete(_finalText.isNotEmpty ? _finalText : _lastPartial);
+          _doneCompleter!
+              .complete(_finalText.isNotEmpty ? _finalText : _lastPartial);
         }
       }
     } catch (_) {}

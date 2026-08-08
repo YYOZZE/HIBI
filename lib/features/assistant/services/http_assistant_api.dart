@@ -23,6 +23,10 @@ class HttpAssistantApi implements AssistantApi {
     bool useBackendSystemPrompt = false,
     String? currentMindNodeId,
     String? token,
+    String? modelApiKey,
+    String? modelBaseUrl,
+    String? modelId,
+    List<Map<String, dynamic>>? attachments,
   }) async {
     final body = <String, dynamic>{
       'message': userMessage,
@@ -33,6 +37,12 @@ class HttpAssistantApi implements AssistantApi {
       if (useBackendSystemPrompt) 'use_backend_system_prompt': true,
       if (currentMindNodeId != null && currentMindNodeId.isNotEmpty)
         'current_mind_node_id': currentMindNodeId,
+      // 用户自定义模型凭据（仅该请求使用；后端勿落盘）
+      if (modelApiKey != null && modelApiKey.isNotEmpty) 'api_key': modelApiKey,
+      if (modelBaseUrl != null && modelBaseUrl.isNotEmpty)
+        'base_url': modelBaseUrl,
+      if (modelId != null && modelId.isNotEmpty) 'model': modelId,
+      if (attachments != null && attachments.isNotEmpty) 'attachments': attachments,
     };
     final headers = <String, String>{
       'Content-Type': 'application/json',

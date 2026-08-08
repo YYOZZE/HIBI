@@ -111,13 +111,7 @@ class ProfilePage extends StatelessWidget {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(
-          '个人中心',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: const Text('个人中心'),
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -215,10 +209,7 @@ class ProfilePage extends StatelessWidget {
                 children: [
                   Text(
                     displayName,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: colorScheme.onSurface,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    style: theme.textTheme.titleMedium,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -227,7 +218,6 @@ class ProfilePage extends StatelessWidget {
                     subtitle,
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w400,
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -424,19 +414,13 @@ class ProfilePage extends StatelessWidget {
       ),
       title: Text(
         title,
-        style: theme.textTheme.titleMedium?.copyWith(
-          color: colorScheme.onSurface,
-          fontWeight: FontWeight.w400,
-        ),
+        style: theme.textTheme.titleMedium,
       ),
       subtitle: subtitle == null || subtitle.isEmpty
           ? null
           : Text(
               subtitle,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurfaceVariant,
-                fontWeight: FontWeight.w400,
-              ),
+              style: theme.textTheme.bodySmall,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),

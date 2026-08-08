@@ -5,6 +5,9 @@ abstract class AssistantApi {
   /// [useBackendSystemPrompt] 为 true 时使用后端 ABP system prompt 并支持工具调用，需 [token]。
   /// 客户端在**用户已登录**（有有效 token）时对任意智能体均应置为 true；未登录则置 false，后端仅按 [agentName]/[agentRole] 组普通 system prompt（无 tools）。
   /// [currentMindNodeId] 当前思维节点 id，供 get_mind_canvas 等使用。
+  /// [modelApiKey] / [modelBaseUrl] / [modelId]：用户「智能体配置」中的自定义凭据；
+  /// 有值时后端对该请求使用用户凭据调模型（不落盘），工具仍走服务端 ABP。
+  /// [attachments]：多模态附件（文本已抽取 / 图片 base64 / 二进制文档由后端抽取）。
   Future<String> sendMessage({
     required String agentId,
     required String userMessage,
@@ -14,6 +17,10 @@ abstract class AssistantApi {
     bool useBackendSystemPrompt = false,
     String? currentMindNodeId,
     String? token,
+    String? modelApiKey,
+    String? modelBaseUrl,
+    String? modelId,
+    List<Map<String, dynamic>>? attachments,
   });
 
   /// 方案 B：获取/创建当前登录用户在该 agent 下的会话 id。
@@ -48,6 +55,10 @@ class PlaceholderAssistantApi implements AssistantApi {
     bool useBackendSystemPrompt = false,
     String? currentMindNodeId,
     String? token,
+    String? modelApiKey,
+    String? modelBaseUrl,
+    String? modelId,
+    List<Map<String, dynamic>>? attachments,
   }) async {
     await Future.delayed(const Duration(milliseconds: 400));
     return '接口未接入，敬请期待。\n\n后续将在此接入云服务器与豆包 API，实现真实对话。';

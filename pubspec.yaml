@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.0.14+44
+version: 3.3.0+52
 
 environment:
   sdk: ^3.5.4
@@ -33,6 +33,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.2
   file_picker: ^8.0.0+1
+  image_picker: ^1.1.2
   network_info_plus: ^4.1.0
   http: ^1.2.0
   app_settings: ^5.1.1
@@ -75,6 +76,7 @@ flutter:
   assets:
     - xhb-image/3.png
     - xhb-image/1_1.png
+    - xhb-image/1_1_dark.png
     - assets/images/
     - backend_jideshi_hibi_app/static/ct4.js
 
@@ -104,15 +106,18 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
-# 应用图标：使用 xhb-image/1_1.png 作为 logo
+# 应用图标：灰色商务双版（跟随系统亮/暗）
+# 1_1.png 浅灰全幅（默认）；1_1_dark.png 深灰全幅（iOS 深色变体 / Windows 图标）
+# 1_1_fg.png 四角透明前景（Android 自适应）；1_1_mono.png 单色（Android 13+ 主题图标）
 # Windows：必须配置 windows 段，否则会跳过生成，app_icon.ico 仍是旧图标，Inno 安装包在资源管理器里会显示通用图标
 flutter_launcher_icons:
   android: true
   ios: true
   image_path: "xhb-image/1_1.png"
-  adaptive_icon_background: "#1D1155"
-  adaptive_icon_foreground: "xhb-image/1_1.png"
+  adaptive_icon_background: "#E9EBEF"
+  adaptive_icon_foreground: "xhb-image/1_1_fg.png"
+  adaptive_icon_monochrome: "xhb-image/1_1_mono.png"
   windows:
     generate: true
-    image_path: "xhb-image/1_1.png"
+    image_path: "xhb-image/1_1_dark.png"
     icon_size: 256

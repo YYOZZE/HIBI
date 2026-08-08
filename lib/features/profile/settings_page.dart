@@ -10,9 +10,13 @@ import '../../app/frosted_background.dart';
 import '../../app/theme_notifier.dart';
 import '../../app/theme_notifier_scope.dart';
 import '../../app/theme_policy_service.dart';
-import 'privacy_terms_page.dart';
+import '../lan_sync/lan_sync_page.dart';
 import '../transfer/transfer_file_actions.dart';
 import '../transfer/transfer_save_path.dart';
+import 'about_version_page.dart';
+import 'agent_config_page.dart';
+import 'privacy_terms_page.dart';
+import 'services/app_update_service.dart';
 
 /// 设置页：通知、权限、文件传输保存路径、关于等（与希比主题统一：毛玻璃背景 + 卡片）
 class SettingsPage extends StatefulWidget {
@@ -74,13 +78,7 @@ class _SettingsPageState extends State<SettingsPage> {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(
-          '设置',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: const Text('设置'),
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -165,15 +163,53 @@ class _SettingsPageState extends State<SettingsPage> {
                 _SettingsCard(
                   children: [
                     _SettingsTile(
-                      icon: Icons.info_outline,
-                      title: '关于$appName',
-                      subtitle: '版本 $kAppDisplayVersion',
+                      icon: Icons.smart_toy_outlined,
+                      title: '智能体配置',
+                      subtitle: '自定义 API Key / Base URL，供助理对话调用',
                       onTap: () {
-                        showAboutDialog(
-                          context: context,
-                          applicationName: appName,
-                          applicationVersion: kAppDisplayVersion,
-                          applicationLegalese: '三端互通助手',
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const AgentConfigPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.sync_alt_outlined,
+                      title: '局域网数据同步',
+                      subtitle: '同网设备发现、配对并同步思维/日程/智能体',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const LanSyncPage(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _SettingsCard(
+                  children: [
+                    ValueListenableBuilder<AppUpdateStatus?>(
+                      valueListenable: AppUpdateService.instance.statusNotifier,
+                      builder: (context, updateStatus, _) {
+                        final hasUpdate =
+                            updateStatus != null && updateStatus.updateAvailable;
+                        return _SettingsTile(
+                          icon: Icons.info_outline,
+                          title: '关于$appName',
+                          subtitle: hasUpdate
+                              ? '版本 $kAppDisplayVersion · 发现新版本 ${updateStatus.manifest.latestVersion}'
+                              : '版本 $kAppDisplayVersion',
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const AboutVersionPage(),
+                              ),
+                            );
+                          },
                         );
                       },
                     ),
@@ -240,11 +276,11 @@ class _SettingsTile extends StatelessWidget {
       leading: Icon(icon, color: colorScheme.primary),
       title: Text(
         title,
-        style: theme.textTheme.titleSmall?.copyWith(color: colorScheme.onSurface),
+        style: theme.textTheme.titleMedium,
       ),
       subtitle: Text(
         subtitle,
-        style: theme.textTheme.bodySmall?.copyWith(color: colorScheme.onSurfaceVariant),
+        style: theme.textTheme.bodySmall,
       ),
       trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
       onTap: onTap,
@@ -272,13 +308,7 @@ class ThemeSettingsPage extends StatelessWidget {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(
-          '主题设置',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: const Text('主题设置'),
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -294,7 +324,7 @@ class ThemeSettingsPage extends StatelessWidget {
                     valueListenable: svc.themeCatalogNotifier,
                     builder: (context, catalog, _) {
                       final items = catalog.isNotEmpty
-                          ? catalog
+                          ? _withSystemThemeFirst(catalog)
                           : AppThemeId.values
                               .map(
                                 (id) => ThemeCatalogItem(
@@ -327,10 +357,7 @@ class ThemeSettingsPage extends StatelessWidget {
                                   ),
                                   title: Text(
                                     it.name,
-                                    style: theme.textTheme.titleSmall?.copyWith(
-                                      color: colorScheme.onSurface,
-                                      fontWeight: FontWeight.w500,
-                                    ),
+                                    style: theme.textTheme.titleMedium,
                                   ),
                                   subtitle: Text(
                                     isCustom
@@ -338,10 +365,7 @@ class ThemeSettingsPage extends StatelessWidget {
                                             ? '自定义主题（token）'
                                             : '自定义主题 · 绑定到 ${it.applyThemeId}')
                                         : _subtitleFor(applyBuiltIn),
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: colorScheme.onSurfaceVariant,
-                                      fontWeight: FontWeight.w400,
-                                    ),
+                                    style: theme.textTheme.bodySmall,
                                   ),
                                   trailing: selected
                                       ? Icon(Icons.check_circle, color: colorScheme.primary, size: 22)
@@ -387,14 +411,35 @@ class ThemeSettingsPage extends StatelessWidget {
     );
   }
 
+  /// 「跟随系统」始终置顶：服务端目录未包含时插入首项，已包含则移到首位
+  static List<ThemeCatalogItem> _withSystemThemeFirst(List<ThemeCatalogItem> catalog) {
+    const autoId = '2026ss_auto';
+    final existing = catalog.where((it) => it.applyThemeId.trim() == autoId || it.id == autoId).toList();
+    final rest = catalog.where((it) => it.applyThemeId.trim() != autoId && it.id != autoId).toList();
+    final entry = existing.isNotEmpty
+        ? existing.first
+        : const ThemeCatalogItem(
+            id: autoId,
+            name: '跟随系统',
+            applyThemeId: autoId,
+          );
+    return [entry, ...rest];
+  }
+
   static IconData _iconFor(AppThemeId id) {
     switch (id) {
+      case AppThemeId.system2026:
+        return Icons.brightness_auto_outlined;
       case AppThemeId.hibi:
         return Icons.image_outlined;
       case AppThemeId.dark:
         return Icons.dark_mode_outlined;
       case AppThemeId.light:
         return Icons.light_mode_outlined;
+      case AppThemeId.light2026:
+        return Icons.wb_sunny_outlined;
+      case AppThemeId.dark2026:
+        return Icons.nightlight_outlined;
       case AppThemeId.spring2027:
         return Icons.auto_awesome_outlined;
       case AppThemeId.dreamy:
@@ -414,12 +459,18 @@ class ThemeSettingsPage extends StatelessWidget {
 
   static String _subtitleFor(AppThemeId id) {
     switch (id) {
+      case AppThemeId.system2026:
+        return '随系统亮暗自动切换亮色/暗色2026SS';
       case AppThemeId.hibi:
         return 'hibi主题背景 + 深紫色系';
       case AppThemeId.dark:
         return '纯色深色背景 + 蓝色点缀';
       case AppThemeId.light:
         return '纯色浅色背景 + 蓝色点缀';
+      case AppThemeId.light2026:
+        return 'iOS 风高级亮色：纯白卡片 + 高级灰点缀（默认）';
+      case AppThemeId.dark2026:
+        return 'iOS 风高级暗色：深灰卡片 + 银灰点缀';
       case AppThemeId.spring2027:
         return '2027SS 高级深色 + 柔光蓝色点缀';
       case AppThemeId.dreamy:
