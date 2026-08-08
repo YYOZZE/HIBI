@@ -25,7 +25,7 @@ void main() {
         {
           AgentProviderId.volcanoArk: const AgentProviderConfig(
             id: AgentProviderId.volcanoArk,
-            apiKey: 'ark-test-key-12345678',
+            apiKey: 'ark-test-key-00000000-0000-0000-0000-000000000000',
             model: 'deepseek-v4-flash-ga-260731',
           ),
           AgentProviderId.openaiCompatible:
@@ -42,7 +42,7 @@ void main() {
       final active = await AgentConfigService.activeChatConfig();
       expect(active, isNotNull);
       expect(active!.effectiveBaseUrl, VolcanoArkDefaults.baseUrl);
-      expect(active.apiKey, 'ark-test-key-12345678');
+      expect(active.apiKey, 'ark-test-key-00000000-0000-0000-0000-000000000000');
     });
 
     test('只填写不选择时不作为对话凭据', () async {
@@ -105,7 +105,7 @@ void main() {
     test('兼容旧 enabled 字段迁移为选中', () async {
       SharedPreferences.setMockInitialValues({
         'hibi_agent_provider_configs_v1':
-            '{"volcano_ark":{"enabled":true,"api_key":"ark-legacy-12345678","base_url":"","model":"m1"},'
+            '{"volcano_ark":{"enabled":true,"api_key":"ark-test-key-11111111-1111-1111-1111-111111111111","base_url":"","model":"m1"},'
             '"openai_compatible":{"enabled":false,"api_key":"","base_url":"","model":""},'
             '"anthropic":{"enabled":false,"api_key":"","base_url":"","model":""},'
             '"google":{"enabled":false,"api_key":"","base_url":"","model":""}}',
@@ -113,7 +113,7 @@ void main() {
       final sel = await AgentConfigService.selectedProviderId();
       expect(sel, AgentProviderId.volcanoArk);
       final active = await AgentConfigService.activeChatConfig();
-      expect(active?.apiKey, 'ark-legacy-12345678');
+      expect(active?.apiKey, 'ark-test-key-11111111-1111-1111-1111-111111111111');
     });
   });
 
@@ -170,9 +170,9 @@ void main() {
       );
       expect(
         OpenAiCompatibleDirectApi.normalizeApiKey(
-          'Authorization: Bearer ark-abc-12345678',
+          'Authorization: Bearer ark-test-key-22222222-2222-2222-2222-222222222222',
         ),
-        'ark-abc-12345678',
+        'ark-test-key-22222222-2222-2222-2222-222222222222',
       );
       expect(
         OpenAiCompatibleDirectApi.normalizeApiKey('  ark-x y\nz  '),
@@ -194,7 +194,7 @@ void main() {
         {
           AgentProviderId.volcanoArk: const AgentProviderConfig(
             id: AgentProviderId.volcanoArk,
-            apiKey: 'Bearer ark-paste-with-bearer-12345678',
+            apiKey: 'Bearer ark-test-key-33333333-3333-3333-3333-333333333333',
             model: '"deepseek-v4-flash-ga-260731"',
           ),
           AgentProviderId.openaiCompatible:
@@ -207,7 +207,7 @@ void main() {
         selected: AgentProviderId.volcanoArk,
       );
       final active = await AgentConfigService.activeChatConfig();
-      expect(active!.effectiveApiKey, 'ark-paste-with-bearer-12345678');
+      expect(active!.effectiveApiKey, 'ark-test-key-33333333-3333-3333-3333-333333333333');
       expect(active.effectiveModel, 'deepseek-v4-flash-ga-260731');
     });
 
