@@ -23,8 +23,8 @@ class GitHubOAuthConfig {
   /// Device Flow 所需 scope：读取用户资料 + 查询 starred
   static const String scopes = 'read:user';
 
-  /// 本地占位；发布构建请用 `--dart-define=GITHUB_CLIENT_ID=...` 覆盖。
-  static const String defaultClientId = '';
+  /// OAuth App Client ID（公开标识，非 Secret）。可用 `--dart-define=GITHUB_CLIENT_ID=...` 覆盖。
+  static const String defaultClientId = 'Ov23li2nBAmeixFqntqJ';
 
   static const String clientId = String.fromEnvironment(
     'GITHUB_CLIENT_ID',
