@@ -42,6 +42,23 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
   bool _webviewOpen = false;
 
   @override
+  void initState() {
+    super.initState();
+    // 本地已有 GitHub 会话但未过 Star：只引导 Star，勿再走网页输密码。
+    final u = AuthRepository.instance.currentUser;
+    if (u != null &&
+        u.isGitHub &&
+        u.token.isNotEmpty &&
+        !AuthRepository.instance.githubAccessGrantedNotifier.value) {
+      _needStar = true;
+      _pendingToken = u.token;
+      _pendingLogin = u.githubLogin;
+      _step = _LoginStep.checkStar;
+      _status = '已恢复本地登录。请 Star 仓库后点「我已 Star」继续（无需再输入密码）。';
+    }
+  }
+
+  @override
   void dispose() {
     _cancelled = true;
     super.dispose();
@@ -261,6 +278,16 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                         '请在网页输入账号密码并授权。希比不会收集你的 GitHub 密码。',
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodyMedium?.copyWith(
+                          color: cs.onSurfaceVariant,
+                          height: 1.35,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '登录一次后，授权信息会保存在本机；升级 App 一般无需再输入密码'
+                        '（除非授权过期、你撤销了授权，或取消了仓库 Star）。',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodySmall?.copyWith(
                           color: cs.onSurfaceVariant,
                           height: 1.35,
                         ),

@@ -62,6 +62,13 @@ class GitHubOAuthException implements Exception {
   String toString() => message;
 }
 
+/// access_token 失效 / 被撤销（需重新走网页授权；不是网络抖动）。
+class GitHubUnauthorizedException extends GitHubOAuthException {
+  const GitHubUnauthorizedException([
+    super.message = 'GitHub 授权已失效，请重新登录授权。',
+  ]) : super(canRetry: true);
+}
+
 /// 无后端 GitHub OAuth Device Flow + Star 校验。
 class GitHubOAuthService {
   GitHubOAuthService({
@@ -73,6 +80,7 @@ class GitHubOAuthService {
 
   static final GitHubOAuthService instance = GitHubOAuthService();
 
+  /// 稳定键名：升级 App 不得变更，否则会读不到旧 token。
   static const String _secureTokenKey = 'hibi_github_oauth_token';
 
   /// 连接超时（国内到 github.com 常偏慢）。
@@ -220,6 +228,9 @@ class GitHubOAuthService {
       headers: _apiHeaders(accessToken),
       stepLabel: '获取用户信息',
     );
+    if (resp.statusCode == 401 || resp.statusCode == 403) {
+      throw const GitHubUnauthorizedException();
+    }
     if (resp.statusCode != 200) {
       throw GitHubOAuthException(
         _httpStatusHint(resp.statusCode, '获取 GitHub 用户失败', resp.body),
@@ -256,13 +267,21 @@ class GitHubOAuthService {
     if (resp.statusCode == 204) return true;
     if (resp.statusCode == 404) return false;
     if (resp.statusCode == 401 || resp.statusCode == 403) {
-      throw GitHubOAuthException(
-        'GitHub 令牌无效或权限不足（${resp.statusCode}），请重新登录。',
-      );
+      throw const GitHubUnauthorizedException();
     }
     throw GitHubOAuthException(
       _httpStatusHint(resp.statusCode, '检查 Star 状态失败', resp.body),
     );
+  }
+
+  /// 粗判是否像 GitHub OAuth token（Device Flow 常见 gho_ 前缀）。
+  static bool looksLikeGitHubToken(String token) {
+    final t = token.trim();
+    if (t.isEmpty) return false;
+    return t.startsWith('gho_') ||
+        t.startsWith('ghu_') ||
+        t.startsWith('ghs_') ||
+        t.startsWith('github_pat_');
   }
 
   Future<bool> openRepoForStar() {

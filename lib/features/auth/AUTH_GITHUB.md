@@ -69,9 +69,11 @@ flutter build windows --release --dart-define=GITHUB_CLIENT_ID=Ov23liXXXXXXXX
 3. 用户在 GitHub 网页登录并授权；App 轮询拿到 `access_token`，调用 `GET /user`
 4. 调用 `GET /user/starred/YYOZZE/HIBI`：`204` 已 Star，`404` 未 Star
 5. 未 Star → 引导打开仓库 Star，并提供「重新检查」
-6. Token 优先写入 `flutter_secure_storage`，并同步一份到 SharedPreferences 以便恢复
+6. **持久化（不存密码）**：`access_token` 写入 `flutter_secure_storage`，并备份到 SharedPreferences / 会话快照；用户资料与 Star 缓存一并落盘。冷启动自动恢复；有有效 token 且 Star 仍有效 → 直接进主界面。token 401 或用户取消 Star 才再要求授权/补 Star。
 
 网络：单次请求超时约 55s，连接超时约 25s；失败时展示中文说明（需能访问 github.com），并提供重试。
+
+> 升级安装一般**不会**清掉本机登录态。若每次更新都要重新在网页输密码，属于异常（已在 3.3.10 加固双写与恢复）。
 
 ### 方案对照（已选型 B）
 
