@@ -73,24 +73,35 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
     _webviewOpen = false;
   }
 
+  void _onWebAuthSucceeded() {
+    if (!mounted) return;
+    setState(() {
+      _status = '已检测到 GitHub 授权成功，正在确认并继续…';
+      _error = null;
+    });
+  }
+
   /// 尽快打开内嵌登录页（账号密码框在 GitHub 网页），与申请设备码并行。
   Future<bool> _ensureWebViewOpen({String? initialUrl}) async {
     if (!mounted) return false;
     if (_webviewOpen && _webController != null) {
-      if (initialUrl != null) _webController!.navigateTo(initialUrl);
+      if (initialUrl != null) {
+        _webController!.navigateTo(initialUrl, force: true);
+      }
       return true;
     }
     if (!githubDeviceWebViewSupported()) return false;
 
     // 复用尚未关闭的控制器；否则新建。登录流程结束前不 dispose，
-    // 以便申请码返回后仍能跳转验证页。
+    // 以便申请码返回后仍能跳转验证页；授权成功后由 WebView 自行关窗。
     final controller = _webController ??
         GitHubDeviceWebViewController(
           initialUrl: initialUrl ?? kGitHubLoginUrl,
           userCode: _userCode,
+          onAuthSucceeded: _onWebAuthSucceeded,
         );
     _webController = controller;
-    if (initialUrl != null) controller.navigateTo(initialUrl);
+    if (initialUrl != null) controller.navigateTo(initialUrl, force: true);
 
     final presented = await openGitHubDeviceAuthWebView(
       context: context,
@@ -116,6 +127,11 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
 
   Future<void> _startDeviceFlow() async {
     if (_busy) return;
+    // 重新开始：关掉旧内嵌页，避免沿用已标记成功的控制器。
+    if (_webviewOpen && mounted) {
+      Navigator.of(context, rootNavigator: true).maybePop();
+    }
+    _disposeWebController();
     setState(() {
       _busy = true;
       _cancelled = false;
@@ -166,11 +182,15 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         _userCode = code.userCode;
         _verificationUri = code.bestVerificationUri;
         _step = _LoginStep.awaitAuth;
-        _status = '请在网页用 GitHub 账号登录并授权（密码只在 GitHub 网站输入）';
+        _status =
+            '验证码已自动填入验证页。请登录（如需）并点 Authorize；完成后会自动继续。';
       });
 
-      _webController?.setUserCode(code.userCode);
-      _webController?.navigateTo(code.bestVerificationUri);
+      // 码一到手立刻跳到带 user_code 的验证页（勿停在裸 login）。
+      _webController?.goToDeviceVerification(
+        code.userCode,
+        verificationUri: code.bestVerificationUri,
+      );
 
       final pollFuture = _oauth.pollAccessToken(
         code,
@@ -182,7 +202,10 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         presented = await _ensureWebViewOpen(
           initialUrl: code.bestVerificationUri,
         );
-        _webController?.setUserCode(code.userCode);
+        _webController?.goToDeviceVerification(
+          code.userCode,
+          verificationUri: code.bestVerificationUri,
+        );
         if (mounted) setState(() => _webviewOpen = presented);
       }
       if (!presented) {
@@ -190,7 +213,7 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         if (mounted) {
           setState(() {
             _status =
-                '已打开系统浏览器。请在 GitHub 网页登录、输入验证码并授权；完成后回到本 App。';
+                '已打开系统浏览器（验证码已在链接中预填）。请登录并点 Authorize；完成后回到本 App。';
           });
         }
       }
@@ -198,7 +221,7 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
       final token = await pollFuture;
       if (!mounted || _cancelled) return;
 
-      // 授权成功：关闭仍打开的内嵌登录页。
+      // 授权成功：关闭仍打开的内嵌登录页，进入 Star 检查。
       if (_webviewOpen && mounted) {
         Navigator.of(context, rootNavigator: true).maybePop();
       }
@@ -207,6 +230,7 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
       setState(() {
         _step = _LoginStep.checkStar;
         _status = '授权成功，正在检查是否已 Star 仓库…';
+        _error = null;
       });
       await _finishWithToken(token);
       if (mounted && !_needStar) {
@@ -232,11 +256,19 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
   }
 
   Future<void> _reopenAuthSurface() async {
-    final uri = _verificationUri ?? kGitHubLoginUrl;
     final code = _userCode;
+    final uri = code == null
+        ? (_verificationUri ?? kGitHubLoginUrl)
+        : githubDeviceVerificationUri(
+            userCode: code,
+            baseUri: _verificationUri ?? kGitHubDeviceUrl,
+          );
     if (_webviewOpen && _webController != null) {
-      _webController!.navigateTo(uri);
-      if (code != null) _webController!.setUserCode(code);
+      if (code != null) {
+        _webController!.goToDeviceVerification(code, verificationUri: uri);
+      } else {
+        _webController!.navigateTo(uri, force: true);
+      }
       return;
     }
     final opened = await showGitHubDeviceAuthWebView(
@@ -403,7 +435,8 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '若网页未自动填入，请把此码粘贴到 GitHub 验证页',
+                                '用于把本次网页授权绑定到本 App；一般已自动填入，无需手抄。'
+                                '若网页未预填，可点下方复制后粘贴。',
                                 textAlign: TextAlign.center,
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: cs.onSurfaceVariant,

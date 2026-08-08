@@ -6,6 +6,8 @@
 
 自 **3.3.11** 起：点「使用 GitHub 登录」后**立刻**打开内嵌页到 `https://github.com/login`（用户能看到账号密码框），同时并行申请 Device Flow 设备码；码就绪后再跳转验证页。HTTP 使用环境代理（`HTTPS_PROXY` 等），申请码失败会重试；网络不通时提示检查代理/VPN，并提供「在系统浏览器打开 GitHub」兜底。**不**经第三方加速反代 OAuth（避免 token 泄露）。
 
+自 **3.3.12** 起：设备码到手即导航到带预填码的验证页（`https://github.com/login/device?user_code=XXXX-XXXX`，或 API 返回的 `verification_uri_complete`）；顶部说明验证码用途并保留复制兜底；监听 URL/标题/页面文案，授权成功（如 “Congratulations, you're all set!”）后自动关闭内嵌页，App 轮询拿到 token 后进入 Star 检查。
+
 > **Client ID 详细技术笔记**（含「勿建 GitHub App」、表单对照、发版注入、排障）：  
 > [`GITHUB_OAUTH_CLIENT_ID.md`](./GITHUB_OAUTH_CLIENT_ID.md)
 
@@ -64,15 +66,17 @@ flutter build windows --release --dart-define=GITHUB_CLIENT_ID=Ov23liXXXXXXXX
 
 ---
 
-## 流程（3.3.11）
+## 流程（3.3.12）
 
 1. 用户点「使用 GitHub 登录」→ **立刻**内嵌 WebView 打开 `https://github.com/login`（可见账号密码框）
 2. **并行**向 `https://github.com/login/device/code` 申请 `user_code`（请求体带 `client_id`；失败最多重试 3 次）
-3. 设备码就绪后，WebView 跳转验证页（优先 `verification_uri_complete`）；内嵌失败或拦截则外跳系统浏览器
-4. 用户在 GitHub 网页登录并授权；App 轮询拿到 `access_token`，调用 `GET /user`
+3. 设备码就绪后，WebView **立刻**跳到带预填码的验证页：优先 `verification_uri_complete`，否则构造 `https://github.com/login/device?user_code=XXXX-XXXX`；内嵌失败则外跳同一链接
+4. 用户登录（如需）→ 确认验证码 → 点 **Authorize**；WebView 检测到成功页后自动关闭；App 同时轮询拿到 `access_token`，调用 `GET /user`
 5. 调用 `GET /user/starred/YYOZZE/HIBI`：`204` 已 Star，`404` 未 Star
 6. 未 Star → 引导打开仓库 Star，并提供「重新检查」
 7. **持久化（不存密码）**：`access_token` 写入 `flutter_secure_storage`，并备份到 SharedPreferences / 会话快照；用户资料与 Star 缓存一并落盘。冷启动自动恢复；有有效 token 且 Star 仍有效 → 直接进主界面。token 401 或用户取消 Star 才再要求授权/补 Star。
+
+> **验证码（user_code）是什么？** 用于把「本次在网页上的授权」与 App 正在轮询的 `device_code` 绑定。一般已通过 URL / 页面自动填入，无需手抄；复制按钮仅作兜底。
 
 网络：单次连接超时约 20s、请求超时约 45s；HttpClient 启用 `findProxyFromEnvironment`（尊重 `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`）。失败时展示中文说明（检查代理/VPN），并提供「在系统浏览器打开」与重试。OAuth 端点**不**走第三方 GitHub 加速镜像。
 

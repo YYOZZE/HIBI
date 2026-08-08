@@ -10,6 +10,35 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../config/github_oauth_config.dart';
 
+/// 构造带预填 [userCode] 的 Device 验证页 URL。
+///
+/// GitHub 支持 `https://github.com/login/device?user_code=XXXX-XXXX`；
+/// 若响应已含 `verification_uri_complete` 则优先使用，否则在 [baseUri] 上补齐参数。
+String githubDeviceVerificationUri({
+  required String userCode,
+  String baseUri = 'https://github.com/login/device',
+  String? verificationUriComplete,
+}) {
+  final complete = verificationUriComplete?.trim();
+  if (complete != null && complete.isNotEmpty) {
+    final parsed = Uri.tryParse(complete);
+    if (parsed != null &&
+        (parsed.queryParameters['user_code']?.trim().isNotEmpty ?? false)) {
+      return complete;
+    }
+  }
+  final code = userCode.trim().toUpperCase();
+  final base = Uri.tryParse(
+        baseUri.trim().isEmpty ? 'https://github.com/login/device' : baseUri.trim(),
+      ) ??
+      Uri.parse('https://github.com/login/device');
+  final params = Map<String, String>.from(base.queryParameters);
+  if (code.isNotEmpty) {
+    params['user_code'] = code;
+  }
+  return base.replace(queryParameters: params).toString();
+}
+
 /// Device Flow 第一步返回的设备码信息。
 class GitHubDeviceCode {
   const GitHubDeviceCode({
@@ -29,11 +58,12 @@ class GitHubDeviceCode {
   final int expiresIn;
   final int interval;
 
-  /// 打开验证页时优先用完整链接，否则退回 verification_uri。
-  String get bestVerificationUri =>
-      (verificationUriComplete != null && verificationUriComplete!.isNotEmpty)
-          ? verificationUriComplete!
-          : verificationUri;
+  /// 打开验证页：始终带上 user_code（GitHub 预填），避免用户停在裸 /login/device。
+  String get bestVerificationUri => githubDeviceVerificationUri(
+        userCode: userCode,
+        baseUri: verificationUri,
+        verificationUriComplete: verificationUriComplete,
+      );
 }
 
 /// GitHub 用户资料（/user）。
@@ -158,14 +188,16 @@ class GitHubOAuthService {
             '设备码响应无效，请重试或检查 OAuth App 是否启用 Device Flow。',
           );
         }
+        final complete = githubDeviceVerificationUri(
+          userCode: userCode,
+          baseUri: uri,
+          verificationUriComplete: uriComplete,
+        );
         return GitHubDeviceCode(
           deviceCode: deviceCode,
           userCode: userCode,
           verificationUri: uri,
-          verificationUriComplete:
-              (uriComplete != null && uriComplete.isNotEmpty)
-                  ? uriComplete
-                  : null,
+          verificationUriComplete: complete,
           expiresIn: (map['expires_in'] as num?)?.toInt() ?? 900,
           interval: (map['interval'] as num?)?.toInt() ?? 5,
         );
