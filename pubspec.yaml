@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 3.3.2+54
+version: 3.3.3+55
 
 environment:
   sdk: ^3.5.4
@@ -109,7 +109,8 @@ flutter:
 # 应用图标：灰色商务双版（跟随系统亮/暗）
 # 1_1.png 浅灰全幅（默认）；1_1_dark.png 深灰全幅（iOS 深色变体 / Windows 图标）
 # 1_1_fg.png 四角透明前景（Android 自适应）；1_1_mono.png 单色（Android 13+ 主题图标）
-# Windows：必须配置 windows 段，否则会跳过生成，app_icon.ico 仍是旧图标，Inno 安装包在资源管理器里会显示通用图标
+# Windows：关闭 generate，改用 tools/make_windows_app_icon.py 预烘焙透明圆角 ICO。
+# 若打开 windows.generate，flutter_launcher_icons 会用直角源图覆盖 app_icon.ico。
 flutter_launcher_icons:
   android: true
   ios: true
@@ -118,6 +119,6 @@ flutter_launcher_icons:
   adaptive_icon_foreground: "xhb-image/1_1_fg.png"
   adaptive_icon_monochrome: "xhb-image/1_1_mono.png"
   windows:
-    generate: true
+    generate: false
     image_path: "xhb-image/1_1_dark.png"
     icon_size: 256

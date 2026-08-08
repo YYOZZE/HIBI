@@ -2,7 +2,7 @@
 
 #define MyAppName "希比-2023"
 #define MyAppNameEn "hibi-2023"
-#define MyAppVersion "3.3.2"
+#define MyAppVersion "3.3.3"
 #define MyAppPublisher "Tsingcoop"
 #define MyAppExeName "jideshi_hibi.exe"
 #define SourceDir "I:\TSINGDIGITAL\HIBI-2023\build\windows\x64\runner\Release"
@@ -16,7 +16,7 @@ AppVerName=hibi-2023 {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppNameEn}
 DefaultGroupName=hibi-2023
-OutputDir=I:\TSINGDIGITAL\HIBI-2023\release\V3.3.2
+OutputDir=I:\TSINGDIGITAL\HIBI-2023\release\V3.3.3
 OutputBaseFilename=Hibi2023_Setup_{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
