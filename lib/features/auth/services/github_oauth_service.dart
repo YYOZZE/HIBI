@@ -53,10 +53,16 @@ class GitHubUserProfile {
 
 /// 面向用户的友好错误（UI 直接展示 [message]，勿再 toString 裸抛）。
 class GitHubOAuthException implements Exception {
-  const GitHubOAuthException(this.message, {this.canRetry = true});
+  const GitHubOAuthException(
+    this.message, {
+    this.canRetry = true,
+    this.isNetwork = false,
+  });
 
   final String message;
   final bool canRetry;
+  /// 是否为连通性/超时类错误（UI 可引导代理/VPN 与系统浏览器）。
+  final bool isNetwork;
 
   @override
   String toString() => message;
@@ -83,21 +89,31 @@ class GitHubOAuthService {
   /// 稳定键名：升级 App 不得变更，否则会读不到旧 token。
   static const String _secureTokenKey = 'hibi_github_oauth_token';
 
-  /// 连接超时（国内到 github.com 常偏慢）。
-  static const Duration connectTimeout = Duration(seconds: 25);
+  /// 单次连接超时（国内到 github.com 常偏慢；过长会让用户久等）。
+  static const Duration connectTimeout = Duration(seconds: 20);
 
   /// 单次请求总超时（连接 + 读响应）。
-  static const Duration requestTimeout = Duration(seconds: 55);
+  static const Duration requestTimeout = Duration(seconds: 45);
+
+  /// 申请设备码最大尝试次数（含首次）。
+  static const int deviceCodeMaxAttempts = 3;
 
   final http.Client _http;
   final bool _ownsClient;
   final FlutterSecureStorage _secure;
 
+  /// 使用环境代理（HTTP(S)_PROXY / ALL_PROXY）；Windows 下若已通过系统/
+  /// 终端配置代理变量，Dart HttpClient 即可走代理直连 GitHub。
+  ///
+  /// 刻意不经第三方「GitHub 加速」反代 OAuth：token 与 device_code 不能交给
+  /// 不可信中转，否则破坏 OAuth 安全。
   static http.Client _createHttpClient() {
     final inner = HttpClient()
       ..connectionTimeout = connectTimeout
       ..idleTimeout = const Duration(seconds: 60)
-      ..userAgent = 'HIBI-Flutter-App';
+      ..userAgent = 'HIBI-Flutter-App'
+      ..findProxy = HttpClient.findProxyFromEnvironment
+      ..autoUncompress = true;
     return IOClient(inner);
   }
 
@@ -105,7 +121,7 @@ class GitHubOAuthService {
     if (_ownsClient) _http.close();
   }
 
-  /// 请求设备码；失败时抛出 [GitHubOAuthException]。
+  /// 请求设备码；失败时抛出 [GitHubOAuthException]。含有限次重试。
   Future<GitHubDeviceCode> requestDeviceCode() async {
     final id = GitHubOAuthConfig.clientId.trim();
     if (id.isEmpty) {
@@ -114,40 +130,62 @@ class GitHubOAuthService {
         canRetry: false,
       );
     }
-    final resp = await _postForm(
-      Uri.parse('https://github.com/login/device/code'),
-      {
-        'client_id': id,
-        'scope': GitHubOAuthConfig.scopes,
-      },
-      stepLabel: '申请设备码',
-    );
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      throw GitHubOAuthException(
-        _httpStatusHint(resp.statusCode, '申请设备码失败', resp.body),
-      );
+
+    Object? lastError;
+    for (var attempt = 1; attempt <= deviceCodeMaxAttempts; attempt++) {
+      try {
+        final resp = await _postForm(
+          Uri.parse('https://github.com/login/device/code'),
+          {
+            'client_id': id,
+            'scope': GitHubOAuthConfig.scopes,
+          },
+          stepLabel: '申请设备码',
+        );
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          throw GitHubOAuthException(
+            _httpStatusHint(resp.statusCode, '申请设备码失败', resp.body),
+          );
+        }
+        final map = _decodeJsonMap(resp.body, stepLabel: '申请设备码');
+        final deviceCode = map['device_code']?.toString() ?? '';
+        final userCode = map['user_code']?.toString() ?? '';
+        final uri = map['verification_uri']?.toString() ??
+            'https://github.com/login/device';
+        final uriComplete = map['verification_uri_complete']?.toString();
+        if (deviceCode.isEmpty || userCode.isEmpty) {
+          throw const GitHubOAuthException(
+            '设备码响应无效，请重试或检查 OAuth App 是否启用 Device Flow。',
+          );
+        }
+        return GitHubDeviceCode(
+          deviceCode: deviceCode,
+          userCode: userCode,
+          verificationUri: uri,
+          verificationUriComplete:
+              (uriComplete != null && uriComplete.isNotEmpty)
+                  ? uriComplete
+                  : null,
+          expiresIn: (map['expires_in'] as num?)?.toInt() ?? 900,
+          interval: (map['interval'] as num?)?.toInt() ?? 5,
+        );
+      } catch (e) {
+        lastError = e;
+        final canRetryNetwork =
+            e is GitHubOAuthException && e.isNetwork && e.canRetry;
+        if (!canRetryNetwork) rethrow;
+        if (attempt < deviceCodeMaxAttempts) {
+          debugPrint('申请设备码第 $attempt 次失败，准备重试: $e');
+          await Future<void>.delayed(Duration(seconds: attempt * 2));
+          continue;
+        }
+      }
     }
-    final map = _decodeJsonMap(resp.body, stepLabel: '申请设备码');
-    final deviceCode = map['device_code']?.toString() ?? '';
-    final userCode = map['user_code']?.toString() ?? '';
-    final uri = map['verification_uri']?.toString() ??
-        'https://github.com/login/device';
-    final uriComplete = map['verification_uri_complete']?.toString();
-    if (deviceCode.isEmpty || userCode.isEmpty) {
-      throw const GitHubOAuthException('设备码响应无效，请重试或检查 OAuth App 是否启用 Device Flow。');
-    }
-    return GitHubDeviceCode(
-      deviceCode: deviceCode,
-      userCode: userCode,
-      verificationUri: uri,
-      verificationUriComplete:
-          (uriComplete != null && uriComplete.isNotEmpty) ? uriComplete : null,
-      expiresIn: (map['expires_in'] as num?)?.toInt() ?? 900,
-      interval: (map['interval'] as num?)?.toInt() ?? 5,
-    );
+    if (lastError is GitHubOAuthException) throw lastError;
+    throw _mapNetworkError(lastError ?? 'unknown', '申请设备码');
   }
 
-  /// 打开系统浏览器前往验证页（内嵌 WebView 失败时的兜底）。
+  /// 打开系统浏览器前往验证页或登录页（内嵌 WebView 失败时的兜底）。
   Future<bool> openVerificationPage(String verificationUri) async {
     final uri = Uri.tryParse(verificationUri);
     if (uri == null) return false;
@@ -368,24 +406,46 @@ class GitHubOAuthService {
     if (e is TimeoutException) {
       return GitHubOAuthException(
         '$stepLabel 超时：当前网络访问 GitHub 较慢或被阻断。\n'
-        '请确认能打开 github.com（必要时开启可访问 GitHub 的网络），然后点「重试」。',
+        '请检查代理/VPN（需能打开 github.com / api.github.com），'
+        '或点「在系统浏览器打开」后重试。',
+        isNetwork: true,
       );
     }
     if (e is SocketException) {
       final msg = e.message;
+      final os = e.osError?.message ?? '';
+      final detail = os.isNotEmpty && !msg.contains(os) ? '$msg / $os' : msg;
       return GitHubOAuthException(
-        '$stepLabel 失败：无法连接 GitHub（$msg）。\n'
-        '本应用需直连 github.com / api.github.com，请检查网络后重试。',
+        '$stepLabel 失败：无法连接 GitHub（$detail）。\n'
+        '本应用需直连 github.com / api.github.com。'
+        '若出现 semaphore timeout / 连接超时，请开启可访问 GitHub 的代理或 VPN，'
+        '并确认系统/终端已配置 HTTPS_PROXY（如有），然后重试；'
+        '也可先用「在系统浏览器打开」到达 GitHub 登录页。',
+        isNetwork: true,
       );
     }
     if (e is HandshakeException) {
       return GitHubOAuthException(
-        '$stepLabel 失败：与 GitHub 的安全连接异常。请检查系统时间与网络环境后重试。',
+        '$stepLabel 失败：与 GitHub 的安全连接异常。请检查系统时间、代理/VPN 与网络环境后重试。',
+        isNetwork: true,
       );
     }
     if (e is http.ClientException) {
       return GitHubOAuthException(
-        '$stepLabel 失败：${e.message}\n请确认可访问 GitHub 后重试。',
+        '$stepLabel 失败：${e.message}\n'
+        '请确认可访问 GitHub（必要时开启代理/VPN）后重试。',
+        isNetwork: true,
+      );
+    }
+    final s = e.toString();
+    if (s.toLowerCase().contains('semaphore timeout') ||
+        s.toLowerCase().contains('timed out') ||
+        s.contains('Failed host lookup') ||
+        s.contains('Connection reset')) {
+      return GitHubOAuthException(
+        '$stepLabel 失败：$e\n'
+        '请检查代理/VPN 后重试，或使用「在系统浏览器打开」。',
+        isNetwork: true,
       );
     }
     return GitHubOAuthException('$stepLabel 失败：$e');
@@ -409,12 +469,24 @@ class GitHubOAuthService {
   static String friendlyError(Object e) {
     if (e is GitHubOAuthException) return e.message;
     final s = e.toString();
-    if (s.contains('TimeoutException')) {
-      return '连接 GitHub 超时。请确认网络可访问 github.com 后重试。';
+    if (s.contains('TimeoutException') ||
+        s.toLowerCase().contains('semaphore timeout')) {
+      return '连接 GitHub 超时。请检查代理/VPN（需能访问 github.com）后重试，'
+          '或使用「在系统浏览器打开」。';
     }
     return s
         .replaceFirst('Bad state: ', '')
         .replaceFirst('Exception: ', '')
         .replaceFirst('GitHubOAuthException: ', '');
+  }
+
+  static bool isNetworkError(Object e) {
+    if (e is GitHubOAuthException) return e.isNetwork;
+    final s = e.toString().toLowerCase();
+    return s.contains('timeout') ||
+        s.contains('semaphore') ||
+        s.contains('socket') ||
+        s.contains('failed host lookup') ||
+        s.contains('connection');
   }
 }

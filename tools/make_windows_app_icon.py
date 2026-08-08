@@ -3,15 +3,15 @@
 
 背景：
   Win32/.exe 嵌入的 ICO 不会像 MSIX AppList 那样由系统自动套圆角底板。
-  若位图四角不透明（直角或黑角），任务栏上会显得比微信等预烘焙 squircle
-  的图标更突兀。本脚本在图标资源内预烘焙圆角 + 透明边。
+  若位图四角不透明（直角或黑角），任务栏上会显得突兀。
+  本脚本在图标资源内预烘焙轻度圆角方块（超椭圆 squircle）+ 透明边。
 
 规范要点（Microsoft Learn + 实践）：
   - 尺寸：至少 16/24/32/48/256；本脚本额外包含任务栏常用 20/40/64/128
-  - 圆角：官方 48px 网格外轮廓约 2px（~4%）偏「字形」；消费级应用在 Win32
-    任务栏普遍采用更大的预烘焙圆角/squircle（约 20–23% 边长，接近微信）
+  - 外形：轻度圆角方块 / PS 式 squircle（非正圆）：
+      SQUIRCLE_N 越大越方（n=2 为正圆）；PAD_FRAC 越小 logo 越大越清晰
   - 透明：圆角外 alpha=0，避免黑角在深色任务栏上拼成硬方块
-  - 小尺寸：缩放后再按目标尺寸重打 alpha，保证 32/40/48 圆角清晰
+  - 小尺寸：缩放后再按目标尺寸重打 alpha，并对线条略锐化
 
 源图优先顺序：
   1) xhb-image/1_1_dark.png（品牌深色底板，若已生成）
@@ -47,12 +47,16 @@ PREVIEW_DIR = os.path.join(ROOT, "tools", "_icon_preview")
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 MASTER = 1024
 
-# 画布边距（透明）：深色 logo 在深色桌面上也要能看出圆角轮廓（接近 PS 浮起感）
-PAD_FRAC = 0.12
-# 超椭圆指数：越小越圆。~2.4 对角切入约 22–24% 边长，观感接近 Adobe/Win11 应用图标
-SQUIRCLE_N = 2.4
+# —— 3.3.11：减小圆角、放大 logo（相对 3.3.7 近圆底板）——
+# 旧：PAD_FRAC=0.12 / SQUIRCLE_N=2.4（对角切入大，观感接近正圆，菱形难辨）
+# 新：PAD_FRAC=0.04 / SQUIRCLE_N=4.8（轻度圆角方块 / PS squircle）
+PAD_FRAC = 0.04
+# 超椭圆指数：越大越方。~4.8 为轻度圆角方块，避免接近圆形
+SQUIRCLE_N = 4.8
+# 品牌图相对底板内缩，给菱形四尖与中心标留安全区（略放大更清晰）
+CONTENT_SCALE = 0.94
 # 羽化宽度（相对边长）；小尺寸在 remask 时另有下限
-FEATHER_FRAC = 0.012
+FEATHER_FRAC = 0.010
 
 
 def _candidate_sources() -> list[str]:
@@ -117,6 +121,25 @@ def squircle_alpha(size: int, pad_frac: float, n: float, feather_frac: float) ->
     return edge.astype(np.float32)
 
 
+def fit_content(art: np.ndarray, scale: float) -> np.ndarray:
+    """将品牌图居中缩放到 scale，四周用边缘底板色填充。"""
+    if scale >= 0.999:
+        return art
+    h, w, _ = art.shape
+    side = max(8, int(round(min(h, w) * scale)))
+    im = Image.fromarray((np.clip(art, 0, 1) * 255).astype(np.uint8), "RGB")
+    small = im.resize((side, side), Image.Resampling.LANCZOS)
+    top = art[max(0, int(0.08 * h)), w // 2]
+    bot = art[min(h - 1, int(0.92 * h)), w // 2]
+    t = (np.arange(h, dtype=np.float32) / max(1, h - 1))[:, None, None]
+    grad = top * (1.0 - t) + bot * t  # (H,1,3)
+    canvas = np.empty((h, w, 3), dtype=np.float32)
+    canvas[:] = grad
+    out = Image.fromarray((np.clip(canvas, 0, 1) * 255).astype(np.uint8), "RGB")
+    out.paste(small, ((w - side) // 2, (h - side) // 2))
+    return np.asarray(out).astype(np.float32) / 255.0
+
+
 def fill_outside_with_edge_color(art: np.ndarray, alpha: np.ndarray) -> np.ndarray:
     """底板外用边缘色填充再乘 alpha，避免半透明环露出错误色。"""
     h, w, _ = art.shape
@@ -141,24 +164,24 @@ def compose_rgba(art_rgb: np.ndarray, alpha: np.ndarray) -> Image.Image:
 
 
 def build_master(src: str) -> Image.Image:
-    art = load_plate_rgb(src, MASTER)
+    art = fit_content(load_plate_rgb(src, MASTER), CONTENT_SCALE)
     alpha = squircle_alpha(MASTER, PAD_FRAC, SQUIRCLE_N, FEATHER_FRAC)
     return compose_rgba(art, alpha)
 
 
 def render_size(master: Image.Image, size: int) -> Image.Image:
     """缩放后按目标尺寸重打 squircle，保证任务栏 32/40/48 四角干净透明。"""
-    # 先放大一点再缩，减轻小尺寸锯齿
     im = master.resize((size, size), Image.Resampling.LANCZOS)
     rgb = np.asarray(im.convert("RGB")).astype(np.float32) / 255.0
     # 小尺寸羽化略宽，避免毛刺；仍强制四角 alpha=0
     feather = FEATHER_FRAC if size >= 48 else max(FEATHER_FRAC, 1.25 / size)
     alpha = squircle_alpha(size, PAD_FRAC, SQUIRCLE_N, feather)
     out = compose_rgba(rgb, alpha)
-    if size <= 32:
-        # 仅轻微锐化 RGB，保留重打后的 alpha
+    if size <= 48:
+        # 锐化 RGB，让中心线条在任务栏尺寸更清晰
+        pct = 140 if size <= 32 else 120
         sharp = out.convert("RGB").filter(
-            ImageFilter.UnsharpMask(radius=0.55, percent=110, threshold=2)
+            ImageFilter.UnsharpMask(radius=0.6, percent=pct, threshold=1)
         )
         out = Image.merge("RGBA", (*sharp.split(), out.getchannel("A")))
     return out
@@ -195,21 +218,30 @@ def verify_ico(path: str) -> None:
         # 中心应不透明
         mid = a[s // 2, s // 2]
         assert mid > 200, "尺寸 %d 中心 alpha 过低: %s" % (s, mid)
-        # 任务栏常用尺寸：对角切入应足够明显（接近微信观感）
-        if s in (32, 40, 48):
+        # 任务栏常用尺寸：轻度圆角（非正圆）——对角切入约 4–12%
+        if s in (32, 40, 48, 256):
             cut = 0
             for i in range(s):
                 if a[i, i] > 128:
                     cut = i
                     break
-            min_cut = max(5, int(0.20 * s))
-            assert cut >= min_cut, "尺寸 %d 圆角不够明显: cut=%d need>=%d" % (
+            min_cut = max(1, int(0.03 * s))
+            max_cut = max(min_cut + 1, int(0.14 * s))
+            assert cut >= min_cut, "尺寸 %d 圆角不够: cut=%d need>=%d" % (
                 s,
                 cut,
                 min_cut,
             )
+            assert cut <= max_cut, "尺寸 %d 圆角过大(近正圆): cut=%d need<=%d" % (
+                s,
+                cut,
+                max_cut,
+            )
             t_frac = float((a < 40).sum()) / float(a.size)
-            assert t_frac >= 0.22, "尺寸 %d 透明区占比过低: %.3f" % (s, t_frac)
+            assert 0.03 <= t_frac <= 0.22, "尺寸 %d 透明区占比异常: %.3f" % (
+                s,
+                t_frac,
+            )
             print(
                 "OK %d: corner_alpha=%r cut=%dpx (%.1f%%) transparent_frac=%.3f"
                 % (s, corners, cut, 100.0 * cut / s, t_frac)
@@ -221,7 +253,11 @@ def verify_ico(path: str) -> None:
 def main() -> int:
     src = resolve_source()
     print("source:", src)
-    print("pad=%.3f squircle_n=%.2f" % (PAD_FRAC, SQUIRCLE_N))
+    print(
+        "pad=%.3f squircle_n=%.2f content_scale=%.2f"
+        % (PAD_FRAC, SQUIRCLE_N, CONTENT_SCALE)
+    )
+    print("compare: old PAD_FRAC=0.12 SQUIRCLE_N=2.4 → new %.3f / %.1f" % (PAD_FRAC, SQUIRCLE_N))
     master = build_master(src)
     os.makedirs(os.path.dirname(OUT_MASTER), exist_ok=True)
     os.makedirs(PREVIEW_DIR, exist_ok=True)

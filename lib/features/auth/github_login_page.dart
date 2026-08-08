@@ -40,6 +40,8 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
   String? _pendingLogin;
   _LoginStep _step = _LoginStep.idle;
   bool _webviewOpen = false;
+  bool _lastErrorNetwork = false;
+  GitHubDeviceWebViewController? _webController;
 
   @override
   void initState() {
@@ -61,7 +63,55 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
   @override
   void dispose() {
     _cancelled = true;
+    _disposeWebController();
     super.dispose();
+  }
+
+  void _disposeWebController() {
+    _webController?.dispose();
+    _webController = null;
+    _webviewOpen = false;
+  }
+
+  /// 尽快打开内嵌登录页（账号密码框在 GitHub 网页），与申请设备码并行。
+  Future<bool> _ensureWebViewOpen({String? initialUrl}) async {
+    if (!mounted) return false;
+    if (_webviewOpen && _webController != null) {
+      if (initialUrl != null) _webController!.navigateTo(initialUrl);
+      return true;
+    }
+    if (!githubDeviceWebViewSupported()) return false;
+
+    // 复用尚未关闭的控制器；否则新建。登录流程结束前不 dispose，
+    // 以便申请码返回后仍能跳转验证页。
+    final controller = _webController ??
+        GitHubDeviceWebViewController(
+          initialUrl: initialUrl ?? kGitHubLoginUrl,
+          userCode: _userCode,
+        );
+    _webController = controller;
+    if (initialUrl != null) controller.navigateTo(initialUrl);
+
+    final presented = await openGitHubDeviceAuthWebView(
+      context: context,
+      controller: controller,
+      onClosed: () {
+        if (mounted) setState(() => _webviewOpen = false);
+      },
+    );
+    if (mounted) setState(() => _webviewOpen = presented);
+    return presented;
+  }
+
+  Future<void> _openSystemBrowserFallback() async {
+    final uri = _verificationUri ?? kGitHubLoginUrl;
+    await _oauth.openVerificationPage(uri);
+    if (!mounted) return;
+    setState(() {
+      _status = _verificationUri == null
+          ? '已在系统浏览器打开 GitHub 登录页。请登录后回到本 App 点「重试登录」完成授权。'
+          : '已打开系统浏览器。请在 GitHub 网页登录、输入验证码并授权；完成后回到本 App。';
+    });
   }
 
   Future<void> _startDeviceFlow() async {
@@ -70,8 +120,9 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
       _busy = true;
       _cancelled = false;
       _error = null;
+      _lastErrorNetwork = false;
       _step = _LoginStep.requestCode;
-      _status = '正在向 GitHub 申请设备码…';
+      _status = '正在打开 GitHub 登录页，并申请设备码…';
       _userCode = null;
       _verificationUri = null;
       _needStar = false;
@@ -88,6 +139,26 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         );
       }
 
+      // UX：先开内嵌 WebView 到登录页，用户立刻看到账号密码框；
+      // Device Flow 申请码与之并行，避免「只见失败、不见登录页」。
+      var presented = false;
+      if (mounted && githubDeviceWebViewSupported()) {
+        presented = await _ensureWebViewOpen(initialUrl: kGitHubLoginUrl);
+      }
+      if (!presented) {
+        // 内嵌不可用时立刻外开登录页，仍尽量让用户到达密码框。
+        await _oauth.openVerificationPage(kGitHubLoginUrl);
+        if (mounted) {
+          setState(() {
+            _status = '已在系统浏览器打开 GitHub 登录页；正在申请设备码…';
+          });
+        }
+      } else if (mounted) {
+        setState(() {
+          _status = '请在网页输入 GitHub 账号密码；同时正在申请设备码…';
+        });
+      }
+
       final code = await _oauth.requestDeviceCode();
       if (!mounted || _cancelled) return;
 
@@ -98,22 +169,20 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
         _status = '请在网页用 GitHub 账号登录并授权（密码只在 GitHub 网站输入）';
       });
 
+      _webController?.setUserCode(code.userCode);
+      _webController?.navigateTo(code.bestVerificationUri);
+
       final pollFuture = _oauth.pollAccessToken(
         code,
         shouldCancel: () => _cancelled || !mounted,
       );
 
-      // 优先内嵌 WebView（不阻塞轮询）；失败则外跳系统浏览器。
-      var presented = false;
-      if (mounted && githubDeviceWebViewSupported()) {
-        presented = await openGitHubDeviceAuthWebView(
-          context: context,
-          verificationUri: code.bestVerificationUri,
-          userCode: code.userCode,
-          onClosed: () {
-            if (mounted) setState(() => _webviewOpen = false);
-          },
+      // 若此前未能打开内嵌页，再试一次验证页；仍失败则外开。
+      if (!presented && mounted && githubDeviceWebViewSupported()) {
+        presented = await _ensureWebViewOpen(
+          initialUrl: code.bestVerificationUri,
         );
+        _webController?.setUserCode(code.userCode);
         if (mounted) setState(() => _webviewOpen = presented);
       }
       if (!presented) {
@@ -130,10 +199,10 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
       if (!mounted || _cancelled) return;
 
       // 授权成功：关闭仍打开的内嵌登录页。
-      if (_webviewOpen) {
+      if (_webviewOpen && mounted) {
         Navigator.of(context, rootNavigator: true).maybePop();
-        _webviewOpen = false;
       }
+      _disposeWebController();
 
       setState(() {
         _step = _LoginStep.checkStar;
@@ -147,24 +216,33 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
       if (!mounted || _cancelled) return;
       setState(() {
         _error = GitHubOAuthService.friendlyError(e);
+        _lastErrorNetwork = GitHubOAuthService.isNetworkError(e);
         _status = null;
         if (_step == _LoginStep.requestCode) {
           _step = _LoginStep.idle;
         }
       });
+      // 网络失败时仍尽量让用户到达 GitHub 登录页（WebView 可能已开；否则外开）。
+      if (_lastErrorNetwork && !_webviewOpen) {
+        await _openSystemBrowserFallback();
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _reopenAuthSurface() async {
-    final uri = _verificationUri;
+    final uri = _verificationUri ?? kGitHubLoginUrl;
     final code = _userCode;
-    if (uri == null || code == null) return;
+    if (_webviewOpen && _webController != null) {
+      _webController!.navigateTo(uri);
+      if (code != null) _webController!.setUserCode(code);
+      return;
+    }
     final opened = await showGitHubDeviceAuthWebView(
       context: context,
       verificationUri: uri,
-      userCode: code,
+      userCode: code ?? '——',
     );
     if (!opened) {
       await _oauth.openVerificationPage(uri);
@@ -459,8 +537,18 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                         ),
                       if (_error != null && !_needStar) ...[
                         const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : _openSystemBrowserFallback,
+                          icon: const Icon(Icons.open_in_browser),
+                          label: const Text('在系统浏览器打开 GitHub'),
+                        ),
+                        const SizedBox(height: 8),
                         Text(
-                          '提示：登录需能访问 github.com。若长期超时，请检查网络后重试。',
+                          _lastErrorNetwork
+                              ? '提示：需能访问 github.com / api.github.com。'
+                                  '出现超时或 semaphore timeout 时，请检查代理/VPN，'
+                                  '或先用上方按钮在系统浏览器打开登录页。'
+                              : '提示：登录需能访问 github.com。若长期失败，请检查网络或 OAuth App 是否启用 Device Flow。',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: cs.onSurfaceVariant,
