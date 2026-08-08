@@ -677,67 +677,85 @@ class _GitHubLoginPageState extends State<GitHubLoginPage> {
                             ),
                           ),
                         ),
-                      if (_busy && _step == _LoginStep.requestCode) ...[
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 12),
-                          child: Center(child: CircularProgressIndicator()),
-                        ),
-                        if (_showSlowHint) ...[
+                      if (!_needStar) ...[
+                        // 申请设备码中：只显示进度与取消，避免与主按钮叠在一起。
+                        if (_busy && _step == _LoginStep.requestCode) ...[
+                          const SizedBox(height: 8),
+                          const Center(child: CircularProgressIndicator()),
+                          const SizedBox(height: 16),
+                          if (_showSlowHint) ...[
+                            Text(
+                              '连接较慢，可取消后重试',
+                              textAlign: TextAlign.center,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          SizedBox(
+                            height: 48,
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed: _cancelCurrentFlow,
+                              child: const Text('取消'),
+                            ),
+                          ),
+                        ] else if (_busy &&
+                            _step != _LoginStep.awaitAuth &&
+                            !_awaitingUserAuth) ...[
+                          const SizedBox(height: 8),
+                          const Center(child: CircularProgressIndicator()),
+                          const SizedBox(height: 16),
+                        ] else ...[
+                          // 空闲 / 等待授权：三颗主按钮固定间距、等高，互不重叠。
+                          SizedBox(
+                            height: 48,
+                            width: double.infinity,
+                            child: FilledButton(
+                              onPressed: (_busy && !_awaitingUserAuth)
+                                  ? null
+                                  : () => _startDeviceFlow(),
+                              child: Text(
+                                _error != null
+                                    ? '重试'
+                                    : (_userCode == null
+                                        ? '使用 GitHub 登录'
+                                        : '重新登录'),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            height: 48,
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _canOpenSystemBrowser
+                                  ? _openSystemBrowserAuth
+                                  : null,
+                              icon: const Icon(Icons.open_in_browser, size: 18),
+                              label: const Text('用系统浏览器登录'),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            height: 48,
+                            width: double.infinity,
+                            child: OutlinedButton(
+                              onPressed:
+                                  _canEnterLocal ? _enterAsLocal : null,
+                              child: const Text('本地账号进入'),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
                           Text(
-                            '连接较慢，可取消后重试',
+                            '本地可用思维/日程等；助理需 GitHub',
                             textAlign: TextAlign.center,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: cs.onSurfaceVariant,
                             ),
                           ),
-                          const SizedBox(height: 8),
-                          OutlinedButton(
-                            onPressed: _cancelCurrentFlow,
-                            child: const Text('取消'),
-                          ),
                         ],
-                      ] else if (_busy &&
-                          _step != _LoginStep.awaitAuth &&
-                          !_awaitingUserAuth)
-                        // 等待用户授权时不转圈卡死：关掉 WebView 后应能点「打开授权页」。
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 12),
-                          child: Center(child: CircularProgressIndicator()),
-                        ),
-                      // 初始页（连接）与后续步骤共用：系统浏览器始终夹在
-                      // 「使用 GitHub 登录」与「本地账号进入」之间，不依赖已有设备码。
-                      if (!_needStar) ...[
-                        FilledButton(
-                          onPressed: (_busy && !_awaitingUserAuth)
-                              ? null
-                              : _startDeviceFlow,
-                          child: Text(
-                            _error != null
-                                ? '重试'
-                                : (_userCode == null
-                                    ? '使用 GitHub 登录'
-                                    : '重新登录'),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        OutlinedButton(
-                          onPressed: _canOpenSystemBrowser
-                              ? _openSystemBrowserAuth
-                              : null,
-                          child: const Text('用系统浏览器登录'),
-                        ),
-                        const SizedBox(height: 10),
-                        OutlinedButton(
-                          onPressed: _canEnterLocal ? _enterAsLocal : null,
-                          child: const Text('本地账号进入'),
-                        ),
-                        Text(
-                          '本地可用思维/日程等；助理需 GitHub',
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
                       ],
                     ],
                   ),

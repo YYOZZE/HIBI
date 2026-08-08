@@ -232,10 +232,58 @@ class GitHubOAuthService {
   }
 
   /// 打开系统浏览器前往验证页或登录页（内嵌 WebView 失败时的兜底）。
+  /// Windows 上 `launchUrl` 偶发返回 false，依次尝试多种方式。
   Future<bool> openVerificationPage(String verificationUri) async {
-    final uri = Uri.tryParse(verificationUri);
-    if (uri == null) return false;
-    return launchUrl(uri, mode: LaunchMode.externalApplication);
+    final raw = verificationUri.trim();
+    final uri = Uri.tryParse(raw);
+    if (uri == null ||
+        !(uri.isScheme('http') || uri.isScheme('https'))) {
+      debugPrint('openVerificationPage: invalid uri=$verificationUri');
+      return false;
+    }
+    debugPrint('openVerificationPage: $uri');
+
+    Future<bool> tryLaunch(LaunchMode mode) async {
+      try {
+        final ok = await launchUrl(uri, mode: mode);
+        debugPrint('launchUrl mode=$mode → $ok');
+        return ok;
+      } catch (e) {
+        debugPrint('launchUrl mode=$mode failed: $e');
+        return false;
+      }
+    }
+
+    if (await tryLaunch(LaunchMode.externalApplication)) return true;
+    if (await tryLaunch(LaunchMode.platformDefault)) return true;
+
+    // Windows：用 shell 打开默认浏览器（不经过 url_launcher）
+    if (!kIsWeb && Platform.isWindows) {
+      try {
+        final r = await Process.run(
+          'cmd',
+          ['/c', 'start', '', uri.toString()],
+          runInShell: true,
+        );
+        debugPrint(
+          'cmd start exit=${r.exitCode} stderr=${r.stderr}',
+        );
+        if (r.exitCode == 0) return true;
+      } catch (e) {
+        debugPrint('cmd start failed: $e');
+      }
+      try {
+        await Process.start(
+          'explorer',
+          [uri.toString()],
+          mode: ProcessStartMode.detached,
+        );
+        return true;
+      } catch (e) {
+        debugPrint('explorer open failed: $e');
+      }
+    }
+    return false;
   }
 
   /// 轮询直到拿到 access_token，或超时/拒绝。
