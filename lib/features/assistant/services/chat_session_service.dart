@@ -7,16 +7,15 @@ import '../../../config/api_config.dart';
 import '../../auth/services/account_storage_paths.dart';
 import '../../auth/services/auth_repository.dart';
 import '../../auth/services/user_sync_scheduler.dart';
-import '../../auth/services/user_sync_service.dart';
-import '../../mind/services/mind_repository.dart';
 import '../../profile/services/agent_config_service.dart';
-import '../../schedule/schedule_event_store.dart';
 import '../models/agent.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
+import '../models/hibi_assistant.dart';
 import '../models/mind_topic_ref.dart';
 import 'assistant_api.dart';
 import 'assistant_repository.dart';
+import 'client_abp/client_abp_runtime.dart';
 import 'openai_compatible_direct_api.dart';
 
 class _QueuedSend {
@@ -297,17 +296,12 @@ class ChatSessionService {
       }
 
       final reply = replyOrError as String;
-      final syncToken = token;
-      if (useBackend && syncToken != null && syncToken.isNotEmpty) {
-        try {
-          await UserSyncService(baseUrl: ApiConfig.authApiBaseUrl).pull(
-            syncToken,
-            bypassSubscriptionCheck: true,
-          );
-          await MindRepository.instance.reloadFromDisk();
-          await ScheduleEventStore.instance.reloadFromDisk();
-          UserSyncScheduler.syncEpoch.value++;
-        } catch (_) {}
+      // 端侧 ABP 已写本地日程；若仍走后端 tools，则 pull 合并云端结果。
+      if (useBackend && !HibiAssistant.isBuiltInId(agentId)) {
+        await UserSyncScheduler.pullAfterAssistantToolUse();
+      } else if (HibiAssistant.isBuiltInId(agentId)) {
+        // 端侧写盘后通知日程页刷新
+        UserSyncScheduler.syncEpoch.value++;
       }
 
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
@@ -359,6 +353,23 @@ class ChatSessionService {
     required AgentProviderConfig? customModel,
     required List<Map<String, dynamic>> attachments,
   }) async {
+    // 希比助手：端侧直连模型 + 本地 tools，不依赖后端执行工具。
+    if (HibiAssistant.isBuiltInId(agent.id)) {
+      if (customModel == null || !customModel.hasApiKey) {
+        throw Exception(
+          '希比助手在 App 端侧运行。请先在「设置 → 智能体配置」填写并选中火山/OpenAI 兼容 API Key。',
+        );
+      }
+      return ClientAbpRuntime().chat(
+        agent: agent,
+        model: customModel,
+        userMessage: text,
+        history: history,
+        currentMindNodeId: mindNodeId,
+        attachments: attachments,
+      );
+    }
+
     Future<String> direct() {
       final cfg = customModel!;
       final system = [

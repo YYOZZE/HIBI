@@ -116,10 +116,14 @@ class UserSyncScheduler {
   /// 助理对话走 `/api/chat` 工具后，服务端已更新 `user_data`；此处拉取合并到本地日程/思维/助理文件，并 bump [syncEpoch]。
   /// 使用 [UserSyncService.pull] 的 `bypassSubscriptionCheck`：仅订助理未订「数据服务」时也必须能 pull，否则会话里创建的日程在日历页不可见。
   static Future<void> pullAfterAssistantToolUse() async {
-    if (!_canSync) return;
+    if (!_canSync) {
+      debugPrint('[SCHED-SYNC] pullAfterAssistantToolUse skip: !_canSync');
+      return;
+    }
     cancelPendingPush();
     try {
       final u = AuthRepository.instance.currentUser!;
+      debugPrint('[SCHED-SYNC] pullAfterAssistantToolUse start…');
       await UserSyncService(baseUrl: ApiConfig.authApiBaseUrl).pull(
         u.token,
         bypassSubscriptionCheck: true,
@@ -127,6 +131,10 @@ class UserSyncScheduler {
       await MindRepository.instance.reloadFromDisk();
       await ScheduleEventStore.instance.reloadFromDisk();
       await AssistantRepository().reloadFromDisk();
+      final n = ScheduleEventStore.instance.events.length;
+      debugPrint(
+        '[SCHED-SYNC] pullAfterAssistantToolUse ok scheduleCount=$n epoch→${syncEpoch.value + 1}',
+      );
       syncEpoch.value++;
     } catch (e, st) {
       debugPrint('pullAfterAssistantToolUse 失败: $e\n$st');

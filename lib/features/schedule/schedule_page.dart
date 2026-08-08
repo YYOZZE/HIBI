@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/frosted_background.dart';
+import '../auth/services/user_sync_scheduler.dart';
 import 'models/schedule_event.dart';
 import 'schedule_event_edit_page.dart';
 import 'schedule_event_store.dart';
@@ -30,6 +31,7 @@ class _SchedulePageState extends State<SchedulePage> {
     _viewMonth = DateTime(now.year, now.month);
     _selectedDate = now;
     _store.eventsNotifier.addListener(_onStoreChanged);
+    UserSyncScheduler.syncEpoch.addListener(_onSyncEpoch);
     _store.ensureLoaded().then((_) {
       if (mounted) setState(() => _storeLoaded = true);
     });
@@ -38,11 +40,18 @@ class _SchedulePageState extends State<SchedulePage> {
   @override
   void dispose() {
     _store.eventsNotifier.removeListener(_onStoreChanged);
+    UserSyncScheduler.syncEpoch.removeListener(_onSyncEpoch);
     super.dispose();
   }
 
   void _onStoreChanged() {
     if (mounted) setState(() {});
+  }
+
+  void _onSyncEpoch() {
+    _store.reloadFromDisk().then((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   List<ScheduleEvent> _eventsInMonth() {

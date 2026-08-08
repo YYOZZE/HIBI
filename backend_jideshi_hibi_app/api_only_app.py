@@ -258,8 +258,9 @@ async def _chat_completions_with_tools(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
     model_id: Optional[str] = None,
-) -> str:
-    """非流式调用，支持 tool_calls；执行后追加 tool 结果再请求，最多 3 轮。"""
+) -> tuple[str, bool]:
+    """非流式调用，支持 tool_calls；执行后追加 tool 结果再请求，最多 3 轮。
+    返回 (回复正文, 本轮是否实际执行过至少一个 tool)。"""
     import hibi_abp_tools as _abp
     import hibi_auth_sync as _auth
 
@@ -270,6 +271,7 @@ async def _chat_completions_with_tools(
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     max_rounds = 3
     last_assistant_content = ""
+    tools_executed = False
     for _ in range(max_rounds):
         payload = {
             "model": mid,
@@ -289,7 +291,7 @@ async def _chat_completions_with_tools(
         if content:
             last_assistant_content = content
         if not tool_calls:
-            return content or last_assistant_content
+            return (content or last_assistant_content), tools_executed
         messages.append(msg)
         for tc in tool_calls:
             tid = tc.get("id") or ""
@@ -307,13 +309,14 @@ async def _chat_completions_with_tools(
                 _auth.save_user_data,
                 current_mind_node_id=current_mind_node_id,
             )
+            tools_executed = True
             messages.append({
                 "role": "tool",
                 "tool_call_id": tid,
                 "content": result,
             })
         tool_choice = "auto"
-    return last_assistant_content
+    return last_assistant_content, tools_executed
 
 
 app = FastAPI(title="希比 HIBI 智能体 API")
@@ -496,8 +499,9 @@ async def api_chat(request: Request):
             tools = _abp.get_tools_definitions()
             # 项目助理：始终允许工具（由 system prompt 约束何时真正调用；不再用关键词关 tool_choice）
             tool_choice = "auto"
+            tools_used = False
             try:
-                full_reply = await _chat_completions_with_tools(
+                full_reply, tools_used = await _chat_completions_with_tools(
                     messages, tools, tool_choice, user_id, current_mind_node_id,
                     base_url=req_base, api_key=req_key, model_id=req_model,
                 )
@@ -517,7 +521,7 @@ async def api_chat(request: Request):
                 "reply": full_reply or "",
                 "memory_connected": False,
                 "memory_full": False,
-                "tools_used": tool_choice == "auto",
+                "tools_used": tools_used,
                 "conversation_id": (conv_id if "conv_id" in locals() else None),
                 "client_model_override": used_client,
             })
@@ -2496,6 +2500,20 @@ async def api_sync_pull(request: Request):
     return JSONResponse(out)
 
 
+def _merge_schedule_lists_for_push(existing_raw, incoming: list) -> list:
+    """按 id 合并日程：先云端已有，再客户端推送（同 id 以客户端为准）。
+    避免助理 create_schedule 写入云端后，客户端尚未 pull 的空列表 push 整包覆盖掉新事件。"""
+    by_id: dict = {}
+    if isinstance(existing_raw, list):
+        for e in existing_raw:
+            if isinstance(e, dict) and e.get("id"):
+                by_id[str(e["id"])] = e
+    for e in incoming:
+        if isinstance(e, dict) and e.get("id"):
+            by_id[str(e["id"])] = e
+    return list(by_id.values())
+
+
 @app.post("/api/sync/push")
 async def api_sync_push(request: Request):
     """退出/切换账户前推送：body 可含 mind / schedule / assistant / settings（主题 themeId 等）"""
@@ -2510,7 +2528,17 @@ async def api_sync_push(request: Request):
             val = data[key]
             if val is None:
                 continue
-            if isinstance(val, (dict, list)):
+            if key == "schedule" and isinstance(val, list):
+                existing = []
+                raw = _auth.get_user_data(user_id, "schedule")
+                if raw:
+                    try:
+                        existing = json.loads(raw) if isinstance(raw, str) else raw
+                    except Exception:
+                        existing = []
+                merged = _merge_schedule_lists_for_push(existing, val)
+                payload = json.dumps(merged, ensure_ascii=False)
+            elif isinstance(val, (dict, list)):
                 payload = json.dumps(val, ensure_ascii=False)
             else:
                 payload = str(val)

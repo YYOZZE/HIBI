@@ -104,6 +104,147 @@ class OpenAiCompatibleDirectApi {
     return content;
   }
 
+  /// OpenAI 兼容 function calling；[onToolCall] 在端侧执行工具并返回 JSON 字符串。
+  /// 最多 3 轮 tool 循环。无 tools 时退化为普通 [chat]。
+  Future<String> chatWithTools({
+    required String apiKey,
+    required String baseUrl,
+    required String model,
+    required String userMessage,
+    List<Map<String, String>>? history,
+    String? systemPrompt,
+    List<Map<String, dynamic>>? attachments,
+    List<Map<String, dynamic>>? tools,
+    String? toolChoice,
+    Future<String> Function(String name, Map<String, dynamic> args)? onToolCall,
+    int maxRounds = 3,
+  }) async {
+    if (tools == null || tools.isEmpty || onToolCall == null) {
+      return chat(
+        apiKey: apiKey,
+        baseUrl: baseUrl,
+        model: model,
+        userMessage: userMessage,
+        history: history,
+        systemPrompt: systemPrompt,
+        attachments: attachments,
+      );
+    }
+
+    final base = normalizeBaseUrl(baseUrl);
+    if (base.isEmpty) {
+      throw Exception('Base URL 为空，请在智能体配置中填写');
+    }
+    final key = normalizeApiKey(apiKey);
+    if (key.isEmpty) throw Exception('API Key 为空');
+    final mid = normalizeModelId(model);
+    final modelId = mid.isEmpty ? 'gpt-3.5-turbo' : mid;
+    final url = Uri.parse('$base/chat/completions');
+
+    final messages = <Map<String, dynamic>>[];
+    if (systemPrompt != null && systemPrompt.trim().isNotEmpty) {
+      messages.add({'role': 'system', 'content': systemPrompt.trim()});
+    }
+    if (history != null) {
+      for (final m in history) {
+        final role = (m['role'] ?? '').trim();
+        final content = (m['content'] ?? '').trim();
+        if ((role == 'user' || role == 'assistant' || role == 'system') &&
+            content.isNotEmpty) {
+          messages.add({'role': role, 'content': content});
+        }
+      }
+    }
+    messages.add({
+      'role': 'user',
+      'content': _buildUserContent(userMessage, attachments),
+    });
+
+    var choice = toolChoice ?? 'auto';
+    var lastContent = '';
+
+    for (var round = 0; round < maxRounds; round++) {
+      final body = <String, dynamic>{
+        'model': modelId,
+        'messages': messages,
+        'stream': false,
+        'tools': tools,
+        'tool_choice': choice,
+      };
+      final res = await _client
+          .post(
+            url,
+            headers: {
+              'Authorization': 'Bearer $key',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 120));
+
+      if (res.statusCode != 200) {
+        String detail = res.body;
+        try {
+          final data = jsonDecode(res.body);
+          if (data is Map) {
+            final err = data['error'];
+            if (err is Map) {
+              detail = (err['message'] ?? err['code'] ?? detail).toString();
+            }
+          }
+        } catch (_) {}
+        throw Exception(
+          '模型接口错误 ${res.statusCode}: ${_friendlyModelHttpError(res.statusCode, detail)}',
+        );
+      }
+
+      final data = jsonDecode(res.body);
+      if (data is! Map) throw Exception('无效响应');
+      final choices = data['choices'];
+      if (choices is! List || choices.isEmpty) {
+        throw Exception('模型无返回内容');
+      }
+      final msg = (choices.first as Map)['message'];
+      if (msg is! Map) throw Exception('无效 message');
+
+      final content = (msg['content'] ?? '').toString().trim();
+      if (content.isNotEmpty) lastContent = content;
+
+      final toolCalls = msg['tool_calls'];
+      if (toolCalls is! List || toolCalls.isEmpty) {
+        if (lastContent.isNotEmpty) return lastContent;
+        final reasoning =
+            (msg['reasoning_content'] ?? msg['reasoning'] ?? '').toString().trim();
+        if (reasoning.isNotEmpty) return reasoning;
+        throw Exception('模型返回空内容');
+      }
+
+      messages.add(Map<String, dynamic>.from(msg));
+      for (final raw in toolCalls) {
+        if (raw is! Map) continue;
+        final id = (raw['id'] ?? '').toString();
+        final fn = raw['function'];
+        if (fn is! Map) continue;
+        final name = (fn['name'] ?? '').toString();
+        Map<String, dynamic> args = {};
+        try {
+          final parsed = jsonDecode((fn['arguments'] ?? '{}').toString());
+          if (parsed is Map) {
+            args = Map<String, dynamic>.from(parsed);
+          }
+        } catch (_) {}
+        final result = await onToolCall(name, args);
+        messages.add({
+          'role': 'tool',
+          'tool_call_id': id,
+          'content': result,
+        });
+      }
+      choice = 'auto';
+    }
+    return lastContent.isNotEmpty ? lastContent : '（工具调用轮次已用尽）';
+  }
+
   /// 有图片时走 OpenAI vision 多段 content；否则纯字符串。
   static dynamic _buildUserContent(
     String userMessage,
