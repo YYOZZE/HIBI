@@ -222,7 +222,7 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
       filled: true,
       fillColor: Colors.white.withOpacity(0.04),
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      hintStyle: TextStyle(color: colorScheme.onSurfaceVariant.withOpacity(0.6), fontSize: 15),
+      hintStyle: Theme.of(context).textTheme.bodyMedium?.copyWith(color: colorScheme.onSurfaceVariant.withOpacity(0.6)),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
         borderSide: BorderSide(color: colorScheme.outline.withOpacity(0.25)),
@@ -260,21 +260,17 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
           children: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: Text('取消', style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w400)),
+              child: Text('取消', style: TextStyle(color: colorScheme.onSurface)),
             ),
             Expanded(
               child: Text(
                 isEditing ? '编辑日程' : '新建日程',
                 textAlign: TextAlign.center,
-                style: theme.textTheme.titleMedium?.copyWith(
-                  color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w600,
-                ),
               ),
             ),
             TextButton(
               onPressed: _save,
-              child: Text('保存', style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w400)),
+              child: Text('保存', style: TextStyle(color: colorScheme.onSurface)),
             ),
           ],
         ),
@@ -305,9 +301,7 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                         TextField(
                           controller: _titleController,
                           decoration: _fieldDecoration('添加标题'),
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            color: colorScheme.onSurface,
-                          ),
+                          style: theme.textTheme.titleLarge,
                         ),
                       ],
                     ),
@@ -337,7 +331,7 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                         child: SwitchListTile(
                           title: Text(
                             '全天',
-                            style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500),
+                            style: theme.textTheme.titleMedium,
                           ),
                           value: _isAllDay,
                           onChanged: (v) => setState(() => _isAllDay = v),
@@ -348,13 +342,12 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                         leading: Icon(Icons.access_time, color: colorScheme.onSurfaceVariant),
                         title: Text(
                           '开始',
-                          style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500),
+                          style: theme.textTheme.titleMedium,
                         ),
                         subtitle: Text(
                           _formatTime(_startTime),
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w400,
                           ),
                         ),
                         trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
@@ -364,13 +357,12 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                         leading: const SizedBox(width: 24),
                         title: Text(
                           '结束',
-                          style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500),
+                          style: theme.textTheme.titleMedium,
                         ),
                         subtitle: Text(
                           _formatTime(_endTime),
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w400,
                           ),
                         ),
                         trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
@@ -383,12 +375,11 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                 _glassSection(
                   child: ListTile(
                     leading: Icon(Icons.repeat, color: colorScheme.onSurfaceVariant),
-                    title: Text('重复', style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500)),
+                    title: Text('重复', style: theme.textTheme.titleMedium),
                     subtitle: Text(
                       _recurrenceLabel,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w400,
                       ),
                     ),
                     trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
@@ -416,12 +407,11 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                 _glassSection(
                   child: ListTile(
                     leading: Icon(Icons.location_on_outlined, color: colorScheme.onSurfaceVariant),
-                    title: Text('地点', style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500)),
+                    title: Text('地点', style: theme.textTheme.titleMedium),
                     subtitle: Text(
                       _locationController.text.isEmpty ? '添加地点' : _locationController.text,
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w400,
                       ),
                     ),
                     trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
@@ -456,12 +446,11 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                 _glassSection(
                   child: ListTile(
                     leading: Icon(Icons.notifications_outlined, color: colorScheme.onSurfaceVariant),
-                    title: Text('提醒', style: TextStyle(color: colorScheme.onSurface, fontWeight: FontWeight.w500)),
+                    title: Text('提醒', style: theme.textTheme.titleMedium),
                     subtitle: Text(
                       _reminderMinutes == null ? '不提醒' : '提前$_reminderMinutes分钟',
                       style: theme.textTheme.bodyMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w400,
                       ),
                     ),
                     trailing: Icon(Icons.chevron_right, color: colorScheme.onSurfaceVariant),
@@ -528,7 +517,7 @@ class _ScheduleEventEditPageState extends State<ScheduleEventEditPage> {
                     child: OutlinedButton.icon(
                       onPressed: _confirmDelete,
                       icon: Icon(Icons.delete_outline, color: colorScheme.error),
-                      label: Text('删除日程', style: TextStyle(color: colorScheme.error, fontWeight: FontWeight.w400)),
+                      label: Text('删除日程', style: TextStyle(color: colorScheme.error)),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         side: BorderSide(color: colorScheme.error.withOpacity(0.6)),

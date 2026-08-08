@@ -367,14 +367,18 @@ class _AssistantPageState extends State<AssistantPage> {
     );
   }
 
-  /// AppBar 右侧 TextButton 统一样式（新建助理 / 订阅）
+  /// AppBar 右侧 TextButton 统一样式（新建助理 / 订阅；与思维页一致，略加大）
   ButtonStyle _appBarActionButtonStyle(BuildContext context) {
     final theme = Theme.of(context);
     return TextButton.styleFrom(
-      visualDensity: VisualDensity.compact,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      textStyle:
-          theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
+      visualDensity: const VisualDensity(horizontal: 0, vertical: -1),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      minimumSize: const Size(0, 40),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: theme.textTheme.labelLarge?.copyWith(
+        fontWeight: FontWeight.w600,
+        fontSize: 14,
+      ),
     );
   }
 
@@ -383,10 +387,44 @@ class _AssistantPageState extends State<AssistantPage> {
       padding: const EdgeInsets.only(right: 8),
       child: TextButton.icon(
         onPressed: _openSubscriptionPage,
-        icon: const Icon(Icons.workspace_premium_outlined, size: 18),
+        icon: const Icon(Icons.workspace_premium_outlined, size: 20),
         label: const Text('订阅'),
         style: _appBarActionButtonStyle(context),
       ),
+    );
+  }
+
+  /// 列表右侧操作槽：锁 / 三点菜单统一宽高与居中，避免错位
+  static const double _kTrailingActionSlot = 48;
+
+  Widget _buildAgentTrailing(BuildContext context, Agent agent) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final Widget action = agent.isBuiltIn
+        ? Icon(
+            Icons.lock_outline,
+            size: 22,
+            color: colorScheme.onSurfaceVariant,
+          )
+        : PopupMenuButton<String>(
+            padding: EdgeInsets.zero,
+            iconSize: 22,
+            icon: const Icon(Icons.more_vert),
+            onSelected: (v) {
+              if (v == 'rename') _renameAgent(agent);
+              if (v == 'editRole') _editRoleAgent(agent);
+              if (v == 'delete') _deleteAgent(agent);
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'rename', child: Text('修改名称')),
+              if (!agent.isAutoCreated)
+                const PopupMenuItem(value: 'editRole', child: Text('修改职能')),
+              const PopupMenuItem(value: 'delete', child: Text('删除')),
+            ],
+          );
+    return SizedBox(
+      width: _kTrailingActionSlot,
+      height: _kTrailingActionSlot,
+      child: Center(child: action),
     );
   }
 
@@ -405,7 +443,7 @@ class _AssistantPageState extends State<AssistantPage> {
         actions: [
           TextButton.icon(
             onPressed: _createAgent,
-            icon: const Icon(Icons.smart_toy_outlined, size: 18),
+            icon: const Icon(Icons.smart_toy_outlined, size: 20),
             label: const Text('新建助理'),
             style: _appBarActionButtonStyle(context),
           ),
@@ -475,29 +513,7 @@ class _AssistantPageState extends State<AssistantPage> {
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: colorScheme.onSurfaceVariant),
                     ),
-                    trailing: agent.isBuiltIn
-                        ? Icon(
-                            Icons.lock_outline,
-                            size: 18,
-                            color: colorScheme.onSurfaceVariant,
-                          )
-                        : PopupMenuButton<String>(
-                            icon: const Icon(Icons.more_vert),
-                            onSelected: (v) {
-                              if (v == 'rename') _renameAgent(agent);
-                              if (v == 'editRole') _editRoleAgent(agent);
-                              if (v == 'delete') _deleteAgent(agent);
-                            },
-                            itemBuilder: (_) => [
-                              const PopupMenuItem(
-                                  value: 'rename', child: Text('修改名称')),
-                              if (!agent.isAutoCreated)
-                                const PopupMenuItem(
-                                    value: 'editRole', child: Text('修改职能')),
-                              const PopupMenuItem(
-                                  value: 'delete', child: Text('删除')),
-                            ],
-                          ),
+                    trailing: _buildAgentTrailing(context, agent),
                     onTap: () => _openChat(agent),
                   ),
                 );

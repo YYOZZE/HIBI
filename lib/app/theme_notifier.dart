@@ -6,11 +6,14 @@ import 'package:timezone/timezone.dart' as tz;
 import 'theme_token.dart';
 import 'theme_token_builder.dart';
 
-/// 主题 ID：hibi 主题（图三毛玻璃）、暗色主题、亮色主题
+/// 主题 ID：hibi 主题（图三毛玻璃）、暗色主题、亮色主题、亮色2026SS（默认）、暗色2026SS 等
 enum AppThemeId {
+  system2026('2026ss_auto', '跟随系统'),
   hibi('hibi', 'hibi主题'),
   dark('dark', '暗色主题'),
   light('light', '亮色主题'),
+  light2026('2026ss', '亮色2026SS'),
+  dark2026('2026ss_dark', '暗色2026SS'),
   spring2027('2027ss', '2027SS'),
   dreamy('dreamy', '梦幻'),
   dreamyNight('dreamy_night', '梦幻·夜'),
@@ -24,9 +27,12 @@ enum AppThemeId {
   final String displayName;
 
   static AppThemeId fromValue(String? v) {
+    if (v == '2026ss_auto') return AppThemeId.system2026;
     if (v == 'hibi') return AppThemeId.hibi;
     if (v == 'dark') return AppThemeId.dark;
     if (v == 'light') return AppThemeId.light;
+    if (v == '2026ss') return AppThemeId.light2026;
+    if (v == '2026ss_dark') return AppThemeId.dark2026;
     if (v == '2027ss') return AppThemeId.spring2027;
     if (v == 'dreamy') return AppThemeId.dreamy;
     if (v == 'dreamy_night') return AppThemeId.dreamyNight;
@@ -34,16 +40,16 @@ enum AppThemeId {
     if (v == 'astral') return AppThemeId.astral;
     if (v == 'astral_phantasm') return AppThemeId.astralPhantasm;
     if (v == 'earthrealm') return AppThemeId.earthrealm;
-    // 默认主题：星界（首次启动/无记录时使用）
-    return AppThemeId.astral;
+    // 默认主题：亮色2026SS（首次启动/无记录时使用）
+    return AppThemeId.light2026;
   }
 }
 
 /// 全局主题状态：持久化到 SharedPreferences，变更时通知重建 MaterialApp
 class ThemeNotifier extends ChangeNotifier {
   ThemeNotifier()
-      : _themeId = AppThemeId.astral,
-        _themeKey = AppThemeId.astral.value {
+      : _themeId = AppThemeId.light2026,
+        _themeKey = AppThemeId.light2026.value {
     _instance = this;
   }
 
@@ -70,7 +76,7 @@ class ThemeNotifier extends ChangeNotifier {
     final v = prefs.getString(_key);
     final key = (v ?? '').trim();
     if (key.isEmpty) {
-      _themeId = AppThemeId.astral;
+      _themeId = AppThemeId.light2026;
       _themeKey = _themeId.value;
       _dynamicTheme = null;
       return;
@@ -83,7 +89,7 @@ class ThemeNotifier extends ChangeNotifier {
       return;
     }
     // custom：尝试读取缓存的 token 并构建 ThemeData
-    _themeId = AppThemeId.astral;
+    _themeId = AppThemeId.light2026;
     final raw = prefs.getString('$_customTokenPrefix$key') ?? '';
     final token = ThemeToken.tryParse(raw);
     _dynamicTheme = token == null ? null : ThemeTokenBuilder.build(token);
@@ -119,7 +125,7 @@ class ThemeNotifier extends ChangeNotifier {
     if (token == null) return;
     final prefs = await SharedPreferences.getInstance();
     _themeKey = k;
-    _themeId = AppThemeId.astral;
+    _themeId = AppThemeId.light2026;
     _dynamicTheme = ThemeTokenBuilder.build(token);
     await prefs.setString(_key, _themeKey);
     await prefs.setString('$_customTokenPrefix$_themeKey', styleCode);

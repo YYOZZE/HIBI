@@ -101,8 +101,9 @@ class SubscriptionAccessService {
     return hasPlanAccess(dataServicePlanId, forceRefresh: forceRefresh);
   }
 
-  static Future<bool> hasAssistantChatAccess({bool forceRefresh = false}) {
-    return hasPlanAccess(assistantServicePlanId, forceRefresh: forceRefresh);
+  /// 助理功能已对全部用户放开，不再校验助理服务订阅（套餐本身保留，供历史订单与增值服务页展示）。
+  static Future<bool> hasAssistantChatAccess({bool forceRefresh = false}) async {
+    return true;
   }
 
   static Future<bool> hasThemeSettingsAccess({bool forceRefresh = false}) async {

@@ -9,7 +9,6 @@ import 'theme_notifier.dart';
 import 'theme_policy_service.dart';
 
 import '../features/auth/services/auth_repository.dart';
-import '../features/profile/services/app_update_service.dart';
 import '../features/schedule/schedule_event_store.dart';
 
 /// 应用启动：加载权限与资源后直接进主壳；不强制登录，个人中心以「本地账户」展示，点头像再登录
@@ -35,7 +34,6 @@ class _InitialAppLoaderState extends State<InitialAppLoader> {
     await ScheduleEventStore.instance.ensureLoaded();
     if (!mounted) return;
     await AppPermissions.requestAll();
-    unawaited(AppUpdateService.instance.checkSilently());
     final tn = ThemeNotifier.maybeInstance;
     if (tn != null) {
       unawaited(ThemePolicyService.instance.refreshAndApply(tn));

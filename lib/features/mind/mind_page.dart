@@ -145,20 +145,29 @@ class _MindPageState extends State<MindPage> {
     );
   }
 
-  Widget _buildSubscribeMiniButton(BuildContext context) {
+  /// AppBar 右侧「新建 / 订阅」统一尺寸（与助理页一致，略加大）
+  ButtonStyle _appBarActionButtonStyle(BuildContext context) {
     final theme = Theme.of(context);
+    return TextButton.styleFrom(
+      visualDensity: const VisualDensity(horizontal: 0, vertical: -1),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      minimumSize: const Size(0, 40),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      textStyle: theme.textTheme.labelLarge?.copyWith(
+        fontWeight: FontWeight.w600,
+        fontSize: 14,
+      ),
+    );
+  }
+
+  Widget _buildSubscribeMiniButton(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: TextButton.icon(
         onPressed: _openSubscriptionPage,
-        icon: const Icon(Icons.workspace_premium_outlined, size: 16),
+        icon: const Icon(Icons.workspace_premium_outlined, size: 20),
         label: const Text('订阅'),
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          textStyle:
-              theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w600),
-        ),
+        style: _appBarActionButtonStyle(context),
       ),
     );
   }
@@ -462,8 +471,9 @@ class _MindPageState extends State<MindPage> {
         actions: [
           TextButton.icon(
             onPressed: _showAddMenu,
-            icon: const Icon(Icons.note_add_outlined, size: 19),
+            icon: const Icon(Icons.note_add_outlined, size: 20),
             label: const Text('新建'),
+            style: _appBarActionButtonStyle(context),
           ),
           _buildSubscribeMiniButton(context),
         ],
@@ -513,15 +523,11 @@ class _MindPageState extends State<MindPage> {
                         ),
                         title: Text(
                           node.title,
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            color: colorScheme.onSurface,
-                          ),
+                          style: theme.textTheme.titleMedium,
                         ),
                         subtitle: Text(
                           '点击进入白板',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
+                          style: theme.textTheme.bodySmall,
                         ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,

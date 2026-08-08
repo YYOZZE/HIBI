@@ -211,7 +211,7 @@ class _RegisterPageState extends State<RegisterPage> {
                         child: Text(
                           '注册',
                           textAlign: TextAlign.center,
-                          style: theme.textTheme.titleLarge?.copyWith(
+                          style: theme.textTheme.headlineSmall?.copyWith(
                             color: colorScheme.onSurface,
                             fontWeight: FontWeight.w400,
                           ),

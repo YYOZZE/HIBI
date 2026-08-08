@@ -10,13 +10,12 @@ import '../../app/frosted_background.dart';
 import '../../app/theme_notifier.dart';
 import '../../app/theme_notifier_scope.dart';
 import '../../app/theme_policy_service.dart';
-import '../lan_sync/lan_sync_page.dart';
-import '../transfer/transfer_file_actions.dart';
-import '../transfer/transfer_save_path.dart';
 import 'about_version_page.dart';
 import 'agent_config_page.dart';
 import 'privacy_terms_page.dart';
 import 'services/app_update_service.dart';
+import '../transfer/transfer_file_actions.dart';
+import '../transfer/transfer_save_path.dart';
 
 /// 设置页：通知、权限、文件传输保存路径、关于等（与希比主题统一：毛玻璃背景 + 卡片）
 class SettingsPage extends StatefulWidget {
@@ -170,19 +169,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (_) => const AgentConfigPage(),
-                          ),
-                        );
-                      },
-                    ),
-                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
-                    _SettingsTile(
-                      icon: Icons.sync_alt_outlined,
-                      title: '局域网数据同步',
-                      subtitle: '同网设备发现、配对并同步思维/日程/智能体',
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const LanSyncPage(),
                           ),
                         );
                       },

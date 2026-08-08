@@ -1,3 +1,5 @@
+import '../utils/block_text_format.dart';
+
 /// 画布上的单条元素：笔记、栏目、连线（Milanote 风格）
 abstract class CanvasItem {
   const CanvasItem({required this.id});
@@ -37,6 +39,9 @@ class CanvasBlock extends CanvasItem {
     this.reminderStartTimeMs,
     this.reminderEndTimeMs,
     this.completed = false,
+    this.align = BlockStylePresets.alignLeft,
+    this.textColor,
+    this.highlight,
   });
 
   double x;
@@ -52,6 +57,12 @@ class CanvasBlock extends CanvasItem {
   int? reminderEndTimeMs;
   /// 已完成：文字变灰并删除线
   bool completed;
+  /// 文字对齐：'left'（默认）或 'center'
+  String align;
+  /// 文字颜色预设 key（见 BlockStylePresets.textColors），null 为跟随主题默认色
+  String? textColor;
+  /// 背景标注预设 key（荧光笔底色，见 BlockStylePresets.highlightColors），null 为无标注
+  String? highlight;
 
   @override
   String get type => 'block';
@@ -69,6 +80,9 @@ class CanvasBlock extends CanvasItem {
         if (reminderStartTimeMs != null) 'reminderStartTimeMs': reminderStartTimeMs,
         if (reminderEndTimeMs != null) 'reminderEndTimeMs': reminderEndTimeMs,
         'completed': completed,
+        if (align != BlockStylePresets.alignLeft) 'align': align,
+        if (textColor != null) 'textColor': textColor,
+        if (highlight != null) 'highlight': highlight,
       };
 
   static CanvasBlock fromJson(Map<String, dynamic> json) {
@@ -86,6 +100,10 @@ class CanvasBlock extends CanvasItem {
       reminderStartTimeMs: startMs is int ? startMs : (startMs as num?)?.toInt(),
       reminderEndTimeMs: endMs is int ? endMs : (endMs as num?)?.toInt(),
       completed: json['completed'] as bool? ?? false,
+      // 旧版 .hbm 无以下字段：统一回退默认，未知值视为无效并回退
+      align: BlockStylePresets.normalizeAlign(json['align']),
+      textColor: BlockStylePresets.normalizeTextColorKey(json['textColor']),
+      highlight: BlockStylePresets.normalizeHighlightKey(json['highlight']),
     );
   }
 
@@ -99,6 +117,9 @@ class CanvasBlock extends CanvasItem {
     int? reminderStartTimeMs,
     int? reminderEndTimeMs,
     bool? completed,
+    String? align,
+    String? textColor,
+    String? highlight,
   }) {
     return CanvasBlock(
       id: id,
@@ -111,6 +132,9 @@ class CanvasBlock extends CanvasItem {
       reminderStartTimeMs: reminderStartTimeMs ?? this.reminderStartTimeMs,
       reminderEndTimeMs: reminderEndTimeMs ?? this.reminderEndTimeMs,
       completed: completed ?? this.completed,
+      align: align ?? this.align,
+      textColor: textColor ?? this.textColor,
+      highlight: highlight ?? this.highlight,
     );
   }
 }

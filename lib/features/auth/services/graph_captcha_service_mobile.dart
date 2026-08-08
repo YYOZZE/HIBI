@@ -146,10 +146,10 @@ class GraphCaptchaService {
                   padding: const EdgeInsets.fromLTRB(16, 14, 8, 10),
                   child: Row(
                     children: [
-                      const Expanded(
+                      Expanded(
                         child: Text(
                           '图形认证',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                          style: Theme.of(ctx).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
                         ),
                       ),
                       IconButton(

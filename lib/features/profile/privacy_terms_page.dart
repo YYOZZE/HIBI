@@ -51,13 +51,7 @@ class _PrivacyTermsPageState extends State<PrivacyTermsPage> {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(
-          '隐私条款',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: const Text('隐私条款'),
         actions: [
           IconButton(
             tooltip: '刷新',
@@ -109,7 +103,6 @@ class _PrivacyTermsPageState extends State<PrivacyTermsPage> {
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: colorScheme.onSurface,
                             height: 1.55,
-                            fontWeight: FontWeight.w400,
                           ),
                         ),
                       ),

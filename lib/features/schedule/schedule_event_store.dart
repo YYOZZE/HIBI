@@ -18,37 +18,6 @@ class ScheduleEventStore {
   late final Future<void> _loadFuture;
   bool _loaded = false;
 
-  static List<ScheduleEvent> _demoEvents() {
-    final now = DateTime.now();
-    return [
-      ScheduleEvent(
-        id: '1',
-        title: 'TTS',
-        startTime: DateTime(now.year, now.month, 6, 0, 0),
-        endTime: DateTime(now.year, now.month, 6, 23, 59),
-        isAllDay: true,
-      ),
-      ScheduleEvent(
-        id: '2',
-        title: '主动好者',
-        startTime: DateTime(now.year, now.month, 6, 10, 0),
-        endTime: DateTime(now.year, now.month, 6, 11, 0),
-      ),
-      ScheduleEvent(
-        id: '3',
-        title: '财税',
-        startTime: DateTime(now.year, now.month, 10, 9, 0),
-        endTime: DateTime(now.year, now.month, 10, 10, 0),
-      ),
-      ScheduleEvent(
-        id: '4',
-        title: '通讯',
-        startTime: DateTime(now.year, now.month, 10, 14, 0),
-        endTime: DateTime(now.year, now.month, 10, 15, 0),
-      ),
-    ];
-  }
-
   final ValueNotifier<List<ScheduleEvent>> eventsNotifier = ValueNotifier<List<ScheduleEvent>>([]);
 
   /// 确保已从磁盘加载完成（日程页/思维画布使用前调用，避免重启后日程丢失）
@@ -77,27 +46,19 @@ class ScheduleEventStore {
         eventsNotifier.value = events;
         unawaited(ScheduleReminderService.instance.rescheduleAll(events));
       } else {
-        // 已登录账号目录无文件：空列表，不写入演示数据，避免串到云端
-        if (AccountStoragePaths.activeKey != AccountStoragePaths.localKey) {
-          eventsNotifier.value = [];
-          await _save(notifySync: false);
-          unawaited(ScheduleReminderService.instance.rescheduleAll(const []));
-        } else {
-          eventsNotifier.value = _demoEvents();
-          await _save();
-          unawaited(ScheduleReminderService.instance.rescheduleAll(eventsNotifier.value));
-        }
-      }
-    } catch (_) {
-      if (AccountStoragePaths.activeKey != AccountStoragePaths.localKey) {
+        // 无持久化文件（全新安装/新账号/本地模式）：一律空列表，不注入任何演示数据
         eventsNotifier.value = [];
         await _save(notifySync: false);
         unawaited(ScheduleReminderService.instance.rescheduleAll(const []));
-      } else {
-        eventsNotifier.value = _demoEvents();
-        await _save();
-        unawaited(ScheduleReminderService.instance.rescheduleAll(eventsNotifier.value));
       }
+    } catch (_) {
+      // 读取失败：内存置空；仅在文件不存在时落盘空文件，避免覆盖可能可恢复的既有数据
+      eventsNotifier.value = [];
+      final file = await _file();
+      if (!await file.exists()) {
+        await _save(notifySync: false);
+      }
+      unawaited(ScheduleReminderService.instance.rescheduleAll(const []));
     }
     _loaded = true;
   }
@@ -119,7 +80,7 @@ class ScheduleEventStore {
     unawaited(ScheduleReminderService.instance.rescheduleAll(const []));
   }
 
-  /// 登录后从服务端写回本地文件后调用；切换回 local 且文件不存在时可回落演示数据
+  /// 登录后从服务端写回本地文件后调用；文件不存在时一律回落为空列表（全新安装无任何演示数据）
   Future<void> reloadFromDisk() async {
     try {
       final file = await _file();
@@ -127,9 +88,9 @@ class ScheduleEventStore {
         if (AccountStoragePaths.activeKey == AccountStoragePaths.localKey) {
           await AccountStoragePaths.migrateLegacyIntoLocalIfNeeded();
           if (!await file.exists()) {
-            eventsNotifier.value = _demoEvents();
-            await _save();
-            unawaited(ScheduleReminderService.instance.rescheduleAll(eventsNotifier.value));
+            eventsNotifier.value = [];
+            await _save(notifySync: false);
+            unawaited(ScheduleReminderService.instance.rescheduleAll(const []));
           } else {
             final list = jsonDecode(await file.readAsString()) as List<dynamic>;
             final ev = <ScheduleEvent>[];

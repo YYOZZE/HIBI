@@ -34,13 +34,21 @@ class HibiApp extends StatelessWidget {
       child: ListenableBuilder(
         listenable: themeNotifier,
         builder: (_, __) {
+          final dynamicTheme = themeNotifier.dynamicTheme;
+          // 「跟随系统」：亮色/暗色2026SS 双槽注入，随系统亮暗切换
+          final followSystem = dynamicTheme == null && themeNotifier.themeId == AppThemeId.system2026;
           return MaterialApp(
             onGenerateTitle: (ctx) {
               final code = Localizations.localeOf(ctx).languageCode.toLowerCase();
               return code.startsWith('zh') ? '希比-2023' : 'hibi-2023';
             },
             debugShowCheckedModeBanner: false,
-            theme: themeNotifier.dynamicTheme ?? AppTheme.getTheme(themeNotifier.themeId),
+            theme: dynamicTheme ??
+                (followSystem
+                    ? AppTheme.getTheme(AppThemeId.light2026)
+                    : AppTheme.getTheme(themeNotifier.themeId)),
+            darkTheme: followSystem ? AppTheme.getTheme(AppThemeId.dark2026) : null,
+            themeMode: followSystem ? ThemeMode.system : null,
             home: const InitialAppLoader(),
           );
         },

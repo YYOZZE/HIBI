@@ -414,7 +414,10 @@ class ProfilePage extends StatelessWidget {
       ),
       title: Text(
         title,
-        style: theme.textTheme.titleMedium,
+        // 显式统一字重，避免 Windows 中文字体合成粗体导致同句内粗细不一
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.w500,
+        ),
       ),
       subtitle: subtitle == null || subtitle.isEmpty
           ? null

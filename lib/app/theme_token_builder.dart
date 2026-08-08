@@ -42,10 +42,11 @@ class ThemeTokenBuilder {
     );
 
     final scale = t.typography.titleScale;
+    // 标题规格与内置主题的全局规范对齐（16 × titleScale，w600），正文由 token 的 baseSize 驱动
     final sized = txt.copyWith(
-      titleLarge: txt.titleLarge?.copyWith(fontSize: (txt.titleLarge?.fontSize ?? 22) * scale, fontWeight: FontWeight.w700),
-      titleMedium: txt.titleMedium?.copyWith(fontSize: (txt.titleMedium?.fontSize ?? 16) * scale, fontWeight: FontWeight.w600),
-      titleSmall: txt.titleSmall?.copyWith(fontSize: (txt.titleSmall?.fontSize ?? 14) * scale, fontWeight: FontWeight.w600),
+      titleLarge: txt.titleLarge?.copyWith(fontSize: 16 * scale, fontWeight: FontWeight.w600),
+      titleMedium: txt.titleMedium?.copyWith(fontSize: 16 * scale, fontWeight: FontWeight.w600),
+      titleSmall: txt.titleSmall?.copyWith(fontSize: 16 * scale, fontWeight: FontWeight.w600),
       bodyLarge: txt.bodyLarge?.copyWith(fontSize: t.typography.baseSize + 2, height: 1.35),
       bodyMedium: txt.bodyMedium?.copyWith(fontSize: t.typography.baseSize, height: 1.35),
       bodySmall: txt.bodySmall?.copyWith(fontSize: t.typography.baseSize - 1, height: 1.35),

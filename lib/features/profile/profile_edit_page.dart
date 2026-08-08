@@ -64,13 +64,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         shadowColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
-        title: Text(
-          '个人资料',
-          style: theme.textTheme.titleLarge?.copyWith(
-            color: colorScheme.onSurface,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        title: const Text('个人资料'),
       ),
       body: Stack(
         fit: StackFit.expand,
@@ -94,19 +88,13 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                             const SizedBox(height: 12),
                             Text(
                               '头像暂不支持修改',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: colorScheme.onSurface,
-                                fontWeight: FontWeight.w500,
-                              ),
+                              style: theme.textTheme.titleMedium,
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 4),
                             Text(
                               '后续将支持从相册选择并同步头像。',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: colorScheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w400,
-                              ),
+                              style: theme.textTheme.bodySmall,
                               textAlign: TextAlign.center,
                             ),
                           ],

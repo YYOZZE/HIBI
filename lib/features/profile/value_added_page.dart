@@ -239,7 +239,6 @@ class ValueAddedPage extends StatefulWidget {
                   '选择支付方式',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.titleMedium?.copyWith(
-                    color: colorScheme.onSurface,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -247,10 +246,7 @@ class ValueAddedPage extends StatefulWidget {
                 Text(
                   '请选择本次续订使用的支付渠道',
                   textAlign: TextAlign.center,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                    fontWeight: FontWeight.w500,
-                  ),
+                  style: theme.textTheme.bodySmall,
                 ),
                 const SizedBox(height: 12),
                 ..._payTypeOptions.map((o) {
@@ -281,10 +277,7 @@ class ValueAddedPage extends StatefulWidget {
                               Expanded(
                                 child: Text(
                                   o.label,
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    color: colorScheme.onSurface,
-                                    fontWeight: FontWeight.w600,
-                                  ),
+                                  style: theme.textTheme.titleMedium,
                                 ),
                               ),
                             ],
@@ -299,13 +292,7 @@ class ValueAddedPage extends StatefulWidget {
                   alignment: Alignment.centerRight,
                   child: TextButton(
                     onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(
-                      '取消',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: colorScheme.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    child: const Text('取消'),
                   ),
                 ),
               ],
@@ -356,39 +343,22 @@ class ValueAddedPage extends StatefulWidget {
               backgroundColor: Theme.of(ctx).dialogTheme.backgroundColor ?? Theme.of(ctx).colorScheme.surface,
               surfaceTintColor: Colors.transparent,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: Text(
-                '支付结果确认',
-                style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                  color: Theme.of(ctx).colorScheme.onSurface,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+              title: const Text('支付结果确认'),
               content: Text(
                 '支付完成后，请点击“我已支付，查看结果”。系统会自动更新您的订阅状态。',
                 style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                  fontWeight: FontWeight.w400,
                   height: 1.45,
                 ),
               ),
               actions: [
                 TextButton(
                   onPressed: checking ? null : () => Navigator.of(ctx).pop(),
-                  child: Text(
-                    '稍后查看',
-                    style: Theme.of(ctx).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
+                  child: const Text('稍后查看'),
                 ),
                 FilledButton(
                   onPressed: checking ? null : checkNow,
-                  child: Text(
-                    checking ? '查询中...' : '我已支付，查看结果',
-                    style: Theme.of(ctx).textTheme.labelLarge?.copyWith(
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
+                  child: Text(checking ? '查询中...' : '我已支付，查看结果'),
                 ),
               ],
             );
@@ -638,12 +608,10 @@ class _ValueAddedPageState extends State<ValueAddedPage> {
                               ),
                               const SizedBox(width: 12),
                               Expanded(
+                                // 菜单型条目与其他页菜单一致用 titleMedium（跟随主题字重），不 inline 覆盖
                                 child: Text(
                                   '给作者买杯咖啡',
-                                  style: theme.textTheme.bodyLarge?.copyWith(
-                                    color: colorScheme.onSurface,
-                                    fontWeight: FontWeight.w400,
-                                  ),
+                                  style: theme.textTheme.titleMedium,
                                 ),
                               ),
                               Icon(

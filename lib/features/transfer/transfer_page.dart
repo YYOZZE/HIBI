@@ -673,8 +673,8 @@ class _TransferPageState extends State<TransferPage> {
                         : out.trim(),
                     style: Theme.of(ctx)
                         .textTheme
-                        .bodySmall
-                        ?.copyWith(fontFamily: 'Consolas', fontSize: 11),
+                        .labelSmall
+                        ?.copyWith(fontFamily: 'Consolas'),
                   ),
                 ],
               ],
@@ -788,9 +788,8 @@ class _TransferPageState extends State<TransferPage> {
                   ),
                   child: SelectableText(
                     _fullFirewallScript,
-                    style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                    style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
                           fontFamily: 'Consolas',
-                          fontSize: 11,
                           color: Theme.of(ctx).colorScheme.onSurface,
                         ),
                   ),
@@ -1580,7 +1579,7 @@ class _TransferPageState extends State<TransferPage> {
             AppGlassStyles.section(
               context,
               margin: EdgeInsets.zero,
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -1601,51 +1600,72 @@ class _TransferPageState extends State<TransferPage> {
                       _sendError = null;
                     },
                     style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
+                      visualDensity: VisualDensity.standard,
                       padding: WidgetStateProperty.all(
                           const EdgeInsets.symmetric(
-                              vertical: 8, horizontal: 12)),
+                              vertical: 12, horizontal: 16)),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
                   if (_sendTabIndex == 0) ...[
-                    if (_isDesktopTransferDropSupported) ...[
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 10, horizontal: 12),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
+                    // 发送区主体加高约 3 倍（电脑端可拖放；移动端为选文件引导区）
+                    Container(
+                      width: double.infinity,
+                      height: 220,
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 28, horizontal: 20),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          width: 1.5,
+                          color: _draggingFiles
+                              ? colorScheme.primary
+                              : colorScheme.outline.withOpacity(0.35),
+                        ),
+                        color: _draggingFiles
+                            ? colorScheme.primaryContainer.withOpacity(0.25)
+                            : colorScheme.surfaceContainerHighest
+                                .withOpacity(0.35),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.cloud_upload_outlined,
+                            size: 48,
                             color: _draggingFiles
                                 ? colorScheme.primary
-                                : colorScheme.outline.withOpacity(0.35),
+                                : colorScheme.onSurfaceVariant,
                           ),
-                          color: _draggingFiles
-                              ? colorScheme.primaryContainer.withOpacity(0.25)
-                              : colorScheme.surfaceContainerHighest
-                                  .withOpacity(0.35),
-                        ),
-                        child: Text(
-                          _draggingFiles
-                              ? '松开即可发送文件或文件夹'
-                              : '可将文件/文件夹拖放到此区域发送（电脑端）',
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
+                          const SizedBox(height: 16),
+                          Text(
+                            _draggingFiles
+                                ? '松开即可发送文件或文件夹'
+                                : (_isDesktopTransferDropSupported
+                                    ? '可将文件/文件夹拖放到此区域发送（电脑端）'
+                                    : '点下方按钮选择文件并发送'),
+                            textAlign: TextAlign.center,
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              color: colorScheme.onSurfaceVariant,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                    ],
+                    ),
+                    const SizedBox(height: 16),
                     FilledButton.icon(
                       onPressed: _sending ? null : _pickAndSend,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
                       icon: _sending
                           ? SizedBox(
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: colorScheme.onPrimary),
+                                  strokeWidth: 2,
+                                  color: colorScheme.onPrimary),
                             )
                           : const Icon(Icons.upload_file),
                       label: Text(_sending ? '发送中…' : '选择文件并发送'),
@@ -1667,28 +1687,38 @@ class _TransferPageState extends State<TransferPage> {
                       ),
                     ],
                   ] else ...[
-                    TextField(
-                      controller: _textController,
-                      maxLines: 5,
-                      decoration: InputDecoration(
-                        hintText: '输入要发送的文本…',
-                        border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(6)),
-                        filled: true,
-                        fillColor: colorScheme.surfaceContainerHighest
-                            .withOpacity(0.5),
+                    SizedBox(
+                      height: 220,
+                      child: TextField(
+                        controller: _textController,
+                        maxLines: null,
+                        expands: true,
+                        textAlignVertical: TextAlignVertical.top,
+                        decoration: InputDecoration(
+                          hintText: '输入要发送的文本…',
+                          border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8)),
+                          filled: true,
+                          fillColor: colorScheme.surfaceContainerHighest
+                              .withOpacity(0.5),
+                          contentPadding: const EdgeInsets.all(16),
+                        ),
+                        style: theme.textTheme.bodyLarge,
                       ),
-                      style: theme.textTheme.bodyLarge,
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
                     FilledButton.icon(
                       onPressed: _sending ? null : _sendText,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
                       icon: _sending
                           ? SizedBox(
                               width: 20,
                               height: 20,
                               child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: colorScheme.onPrimary),
+                                  strokeWidth: 2,
+                                  color: colorScheme.onPrimary),
                             )
                           : const Icon(Icons.send),
                       label: Text(_sending ? '发送中…' : '发送文本'),
@@ -1697,8 +1727,8 @@ class _TransferPageState extends State<TransferPage> {
                   if (_sendError != null) ...[
                     const SizedBox(height: 8),
                     Text(_sendError!,
-                        style:
-                            TextStyle(color: colorScheme.error, fontSize: 12)),
+                        style: theme.textTheme.labelMedium
+                            ?.copyWith(color: colorScheme.error)),
                   ],
                 ],
               ),
@@ -1849,10 +1879,7 @@ class _TransferPageState extends State<TransferPage> {
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
                     '对方可通过接收端口向你发文件；发现端口用于自动发现附近设备。',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
+                    style: theme.textTheme.labelMedium,
                   ),
                 ),
               ],
@@ -1922,10 +1949,7 @@ class _TransferPageState extends State<TransferPage> {
                         children: [
                           Text(
                             '执行完「一键执行」后请点「重试发现」或重启应用。',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colorScheme.onSurfaceVariant,
-                              fontSize: 12,
-                            ),
+                            style: theme.textTheme.labelMedium,
                           ),
                           FilledButton.icon(
                             onPressed: () async {
@@ -1983,7 +2007,6 @@ class _TransferPageState extends State<TransferPage> {
                       '请确保对方已打开本页并处于同一 WiFi',
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant.withOpacity(0.9),
-                        fontSize: 13,
                       ),
                       textAlign: TextAlign.center,
                     ),
@@ -1992,9 +2015,8 @@ class _TransferPageState extends State<TransferPage> {
                       Platform.isWindows
                           ? '若无法发现设备，请检查防火墙是否允许本应用（UDP ${_configuredDiscoveryPort}）'
                           : '若无法发现设备，请检查是否已授予网络/本地网络权限',
-                      style: theme.textTheme.bodySmall?.copyWith(
+                      style: theme.textTheme.labelMedium?.copyWith(
                         color: colorScheme.onSurfaceVariant.withOpacity(0.85),
-                        fontSize: 12,
                       ),
                       textAlign: TextAlign.center,
                     ),
@@ -2015,9 +2037,8 @@ class _TransferPageState extends State<TransferPage> {
           else ...[
             Text(
               '列表中为对方设备的 IP 与接收端口，两端显示不同属正常',
-              style: theme.textTheme.bodySmall?.copyWith(
+              style: theme.textTheme.labelMedium?.copyWith(
                 color: colorScheme.onSurfaceVariant.withOpacity(0.9),
-                fontSize: 12,
               ),
             ),
             const SizedBox(height: 4),

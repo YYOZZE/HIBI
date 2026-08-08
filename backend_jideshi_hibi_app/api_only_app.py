@@ -103,16 +103,60 @@ def _normalize_history(history) -> list:
     return out[-MAX_HISTORY_MESSAGES:] if len(out) > MAX_HISTORY_MESSAGES else out
 
 
-def _check_base_url_for_doubao():
+def _check_base_url_for_doubao(base_url: Optional[str] = None):
     """若当前配置成阿里云地址却用豆包 Key，会 401 且错误链接指向 help.aliyun.com。提醒改用火山方舟。"""
-    if not MODEL_BASE_URL:
+    check = (base_url or MODEL_BASE_URL or "").strip()
+    if not check:
         return
-    lower = MODEL_BASE_URL.lower()
+    lower = check.lower()
     if "dashscope.aliyuncs.com" in lower or "aliyuncs.com" in lower:
         logger.warning(
             "MODEL_BASE_URL 当前为阿里云地址（%s），若使用豆包请改为: https://ark.cn-beijing.volces.com/api/v3",
-            MODEL_BASE_URL[:60],
+            check[:60],
         )
+
+
+def _normalize_openai_base_url(raw: str) -> str:
+    """去掉尾斜杠与误粘贴的 /chat/completions，兼容火山方舟控制台完整 URL。"""
+    u = (raw or "").strip()
+    while u.endswith("/"):
+        u = u[:-1]
+    suffix = "/chat/completions"
+    if u.lower().endswith(suffix):
+        u = u[: -len(suffix)]
+        while u.endswith("/"):
+            u = u[:-1]
+    return u
+
+
+def _resolve_model_credentials(data: dict) -> tuple[str, str, str, bool]:
+    """
+    解析本次请求使用的模型凭据。
+    客户端可透传 api_key / base_url / model（仅该请求使用，不落盘）。
+    返回 (base_url, api_key, model_id, used_client_override)。
+    """
+    client_key = (data.get("api_key") or data.get("model_api_key") or "").strip()
+    client_base = _normalize_openai_base_url(
+        (data.get("base_url") or data.get("model_base_url") or "")
+    )
+    client_model = (data.get("model") or data.get("model_id") or "").strip()
+    if client_key and len(client_key) >= 8:
+        # 火山 ark- Key 未带 base 时，默认落到方舟而非 api.openai.com，避免误连 OpenAI
+        default_base = (MODEL_BASE_URL or "").rstrip("/")
+        if not default_base:
+            if client_key.startswith("ark-"):
+                default_base = "https://ark.cn-beijing.volces.com/api/v3"
+            else:
+                default_base = "https://api.openai.com/v1"
+        base = client_base or default_base
+        model = client_model or MODEL_ID or "gpt-3.5-turbo"
+        return base, client_key, model, True
+    return (
+        (MODEL_BASE_URL or "").rstrip("/"),
+        MODEL_API_KEY or "",
+        MODEL_ID or "gpt-3.5-turbo",
+        False,
+    )
 
 
 def _asr_stream_ws_connect_error_message(last_err: Optional[BaseException], last_url: str) -> str:
@@ -159,14 +203,22 @@ def _asr_stream_ws_connect_error_message(last_err: Optional[BaseException], last
     return head[:580]
 
 
-async def _chat_completions_stream_messages(messages: list):
+async def _chat_completions_stream_messages(
+    messages: list,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model_id: Optional[str] = None,
+):
     """调用 OpenAI 兼容 /chat/completions，流式返回完整回复。"""
     if not messages:
         return
-    base = (MODEL_BASE_URL or "https://api.openai.com/v1").rstrip("/")
+    base = (base_url or MODEL_BASE_URL or "https://api.openai.com/v1").rstrip("/")
+    key = (api_key or MODEL_API_KEY or "").strip()
+    mid = (model_id or MODEL_ID or "gpt-3.5-turbo").strip()
     url = base + "/chat/completions"
-    headers = {"Authorization": f"Bearer {MODEL_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": MODEL_ID, "messages": messages, "stream": True}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    payload = {"model": mid, "messages": messages, "stream": True}
     full_reply = ""
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -202,19 +254,25 @@ async def _chat_completions_with_tools(
     tool_choice: str,
     user_id: str,
     current_mind_node_id: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model_id: Optional[str] = None,
 ) -> str:
     """非流式调用，支持 tool_calls；执行后追加 tool 结果再请求，最多 3 轮。"""
     import hibi_abp_tools as _abp
     import hibi_auth_sync as _auth
 
-    base = (MODEL_BASE_URL or "https://api.openai.com/v1").rstrip("/")
+    base = (base_url or MODEL_BASE_URL or "https://api.openai.com/v1").rstrip("/")
+    key = (api_key or MODEL_API_KEY or "").strip()
+    mid = (model_id or MODEL_ID or "gpt-3.5-turbo").strip()
     url = base + "/chat/completions"
-    headers = {"Authorization": f"Bearer {MODEL_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     max_rounds = 3
     last_assistant_content = ""
     for _ in range(max_rounds):
         payload = {
-            "model": MODEL_ID,
+            "model": mid,
             "messages": messages,
             "tools": tools,
             "tool_choice": tool_choice,
@@ -364,6 +422,7 @@ async def api_chat(request: Request):
     请求体：message（必填）, history（可选）, agent_name / agent_role（可选）。
     use_backend_system_prompt=true 时使用后端项目助理 system prompt（文件 / 后台保存 / 默认）并支持工具调用（需 Authorization）。
     agent_name / agent_role：与 ABP 合用人设（拼在 system 全文前）；current_mind_node_id：当前思维节点 id，供 get_mind_canvas 等使用。
+    可选透传：api_key / base_url / model —— 仅该请求使用用户自定义凭据调模型（不落盘），工具仍走服务端 ABP。
     返回：{ "reply": string, "tools_used": bool }。
     """
     try:
@@ -379,18 +438,19 @@ async def api_chat(request: Request):
         use_backend_prompt = data.get("use_backend_system_prompt") is True
         current_mind_node_id = (data.get("current_mind_node_id") or "").strip() or None
 
-        if not MODEL_BASE_URL or not MODEL_API_KEY:
-            logger.warning("未配置 MODEL_BASE_URL 或 MODEL_API_KEY，返回占位回复")
+        req_base, req_key, req_model, used_client = _resolve_model_credentials(data)
+        if not req_base or not req_key:
+            logger.warning("未配置 MODEL_BASE_URL 或 MODEL_API_KEY，且客户端未透传凭据")
             return JSONResponse({
-                "reply": "后端未配置大模型（请在服务器 .env 中设置 MODEL_BASE_URL、MODEL_API_KEY、MODEL_ID）。",
+                "reply": "后端未配置大模型（请在服务器 .env 中设置 MODEL_BASE_URL、MODEL_API_KEY、MODEL_ID，或在 App「智能体配置」中填写 API Key）。",
                 "memory_connected": False,
                 "memory_full": False,
             })
-        _check_base_url_for_doubao()
-        if len(MODEL_API_KEY) < 10:
-            logger.warning("MODEL_API_KEY 长度过短")
+        _check_base_url_for_doubao(req_base)
+        if len(req_key) < 8:
+            logger.warning("模型 API Key 长度过短（client_override=%s）", used_client)
             return JSONResponse({
-                "reply": "后端未配置大模型（请在服务器 .env 中设置 MODEL_BASE_URL、MODEL_API_KEY、MODEL_ID）。",
+                "reply": "模型 API Key 无效，请检查服务器配置或 App「智能体配置」。",
                 "memory_connected": False,
                 "memory_full": False,
             })
@@ -439,6 +499,7 @@ async def api_chat(request: Request):
             try:
                 full_reply = await _chat_completions_with_tools(
                     messages, tools, tool_choice, user_id, current_mind_node_id,
+                    base_url=req_base, api_key=req_key, model_id=req_model,
                 )
             except Exception as e:
                 logger.exception("工具调用轮次异常: %s", e)
@@ -458,6 +519,7 @@ async def api_chat(request: Request):
                 "memory_full": False,
                 "tools_used": tool_choice == "auto",
                 "conversation_id": (conv_id if "conv_id" in locals() else None),
+                "client_model_override": used_client,
             })
 
         agent_name = (data.get("agent_name") or "").strip() or "智能助手"
@@ -465,9 +527,14 @@ async def api_chat(request: Request):
         system_content = _build_system_prompt(agent_name, agent_role)
         messages = [{"role": "system", "content": system_content}] + history + [{"role": "user", "content": message}]
 
-        logger.info("模型请求: base_url=%s, model=%s, api_key_len=%d", MODEL_BASE_URL[:50], MODEL_ID, len(MODEL_API_KEY))
+        logger.info(
+            "模型请求: base_url=%s, model=%s, api_key_len=%d, client_override=%s",
+            (req_base or "")[:50], req_model, len(req_key or ""), used_client,
+        )
         full_reply = ""
-        async for full_reply in _chat_completions_stream_messages(messages):
+        async for full_reply in _chat_completions_stream_messages(
+            messages, base_url=req_base, api_key=req_key, model_id=req_model,
+        ):
             pass
 
         # 普通对话：若有登录态也可落库（不含 tools）
@@ -484,6 +551,7 @@ async def api_chat(request: Request):
             "memory_connected": False,
             "memory_full": False,
             "conversation_id": (conv_id if "conv_id" in locals() else None),
+            "client_model_override": used_client,
         })
     except Exception as e:
         logger.exception("api_chat 异常: %s", e)

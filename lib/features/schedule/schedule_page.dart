@@ -127,10 +127,7 @@ class _SchedulePageState extends State<SchedulePage> {
                   const SizedBox(width: 4),
                   Text(
                     '收起看总览',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w400,
-                    ),
+                    style: theme.textTheme.bodySmall,
                   ),
                 ],
               ),
@@ -164,8 +161,6 @@ class _SchedulePageState extends State<SchedulePage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final eventsForMonth = _eventsInMonth();
     final dayEvents = _eventsOnSelectedDay();
 
@@ -184,10 +179,6 @@ class _SchedulePageState extends State<SchedulePage> {
             Flexible(
               child: Text(
                 _monthYearLabel(),
-                style: theme.textTheme.titleLarge?.copyWith(
-                  color: colorScheme.onSurface,
-                  fontWeight: FontWeight.w600,
-                ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
@@ -398,20 +389,13 @@ class _DayEventTile extends StatelessWidget {
       ),
       title: Text(
         event.title,
-        style: theme.textTheme.titleMedium?.copyWith(
-          color: colorScheme.onSurface,
-          fontWeight: FontWeight.w500,
-          fontSize: 16,
-        ),
+        style: theme.textTheme.titleMedium,
       ),
       subtitle: Text(
         event.isAllDay
             ? '全天'
             : '${event.startTime.hour.toString().padLeft(2, '0')}:${event.startTime.minute.toString().padLeft(2, '0')} - ${event.endTime.hour.toString().padLeft(2, '0')}:${event.endTime.minute.toString().padLeft(2, '0')}',
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: colorScheme.onSurfaceVariant,
-          fontSize: 14,
-        ),
+        style: theme.textTheme.bodySmall,
       ),
       trailing: const Icon(Icons.chevron_right),
     );

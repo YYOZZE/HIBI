@@ -126,8 +126,7 @@ class _AgileCoursePageState extends State<AgileCoursePage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text('你的敏捷学习冲刺',
-                                    style: theme.textTheme.titleLarge?.copyWith(
-                                        fontWeight: FontWeight.w700)),
+                                    style: theme.textTheme.titleLarge),
                                 const SizedBox(height: 4),
                                 Text(
                                     '${agileCourseChapters.length} 章 · $total 课 · 建议 6 周完成',
@@ -170,8 +169,7 @@ class _AgileCoursePageState extends State<AgileCoursePage> {
                           Icon(Icons.workspaces_outline, color: colors.primary),
                           const SizedBox(width: 8),
                           Text('贯穿实战：敏捷项目作战包',
-                              style: theme.textTheme.titleMedium
-                                  ?.copyWith(fontWeight: FontWeight.w700)),
+                              style: theme.textTheme.titleMedium),
                         ],
                       ),
                       const SizedBox(height: 10),
@@ -191,8 +189,7 @@ class _AgileCoursePageState extends State<AgileCoursePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('学习看板',
-                          style: theme.textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700)),
+                          style: theme.textTheme.titleMedium),
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -232,8 +229,7 @@ class _AgileCoursePageState extends State<AgileCoursePage> {
                 ),
                 const SizedBox(height: 18),
                 Text('课程章节',
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700)),
+                    style: theme.textTheme.titleMedium),
                 const SizedBox(height: 8),
                 for (final chapter in agileCourseChapters) ...[
                   _buildChapter(context, chapter),
@@ -278,8 +274,7 @@ class _AgileCoursePageState extends State<AgileCoursePage> {
               color: colors.onPrimaryContainer),
         ),
         title: Text('${chapter.number}. ${chapter.title}',
-            style: theme.textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w600)),
+            style: theme.textTheme.titleMedium),
         subtitle: Text(
             '${chapter.subtitle}  ·  $done/${chapter.lessons.length}',
             maxLines: 2),
@@ -432,8 +427,7 @@ class _AgileLessonPageState extends State<AgileLessonPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(lesson.title,
-                        style: theme.textTheme.headlineSmall
-                            ?.copyWith(fontWeight: FontWeight.w700)),
+                        style: theme.textTheme.headlineSmall),
                     const SizedBox(height: 8),
                     Row(children: [
                       const Icon(Icons.schedule, size: 18),
@@ -476,8 +470,7 @@ class _AgileLessonPageState extends State<AgileLessonPage> {
                     children: [
                       Text(
                         lesson.caseStudy!.title,
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                        style: theme.textTheme.titleMedium,
                       ),
                       const SizedBox(height: 10),
                       Text('情境',
@@ -594,8 +587,7 @@ class _AgileLessonPageState extends State<AgileLessonPage> {
                         children: [
                           Expanded(
                             child: Text(lesson.template!.title,
-                                style: theme.textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w700)),
+                                style: theme.textTheme.titleMedium),
                           ),
                           TextButton.icon(
                             onPressed: () => _copyTemplate(lesson.template!),
@@ -782,10 +774,7 @@ class _SectionTitle extends StatelessWidget {
         Icon(icon, size: 21, color: colors.primary),
         const SizedBox(width: 8),
         Text(title,
-            style: Theme.of(context)
-                .textTheme
-                .titleMedium
-                ?.copyWith(fontWeight: FontWeight.w700)),
+            style: Theme.of(context).textTheme.titleMedium),
       ],
     );
   }

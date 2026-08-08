@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'app_theme_extension.dart';
 import 'theme_notifier.dart';
 
-/// 应用主题：hibi 主题（图三毛玻璃）、暗色主题、亮色主题；可保留 logo 蓝为点缀色
+/// 应用主题：hibi 主题（图三毛玻璃）、暗色主题、亮色主题、亮色2026SS、暗色2026SS 等；可保留 logo 蓝为点缀色
 class AppTheme {
   AppTheme._();
 
@@ -28,6 +28,24 @@ class AppTheme {
   static const Color _lightSurface = Color(0xFFE4E4E6);
   /// 亮色主题正文/副标题用深灰，提升可读性
   static const Color _lightOnSurfaceVariant = Color(0xFF424242);
+
+  /// 亮色2026SS：iOS 风高级亮色（冷灰分组底 + 纯白卡片 + 石墨灰点缀 + 发丝级分隔线）
+  static const Color _l26Bg = Color(0xFFF2F3F7);
+  static const Color _l26Surface = Color(0xFFFFFFFF);
+  static const Color _l26Elevated = Color(0xFFF7F8FA);
+  static const Color _l26Primary = Color(0xFF3A3A3C); // 高级石墨灰（商务中性色）
+  static const Color _l26OnSurface = Color(0xFF1C1C1E); // iOS Label
+  static const Color _l26OnSurfaceVariant = Color(0xFF6E6E73); // iOS Secondary Label
+  static const Color _l26Outline = Color(0xFFE2E3E8); // 发丝级分隔线
+
+  /// 暗色2026SS：iOS 风高级暗色（近黑分组底 + 深灰卡片 + 商务银灰点缀，呼应深灰 Logo 的银色线条）
+  static const Color _d26Bg = Color(0xFF0E0E10);
+  static const Color _d26Surface = Color(0xFF1C1C1E);
+  static const Color _d26Elevated = Color(0xFF2C2C2E);
+  static const Color _d26Primary = Color(0xFFC9CDD6); // 商务银灰
+  static const Color _d26OnSurface = Color(0xFFF2F2F7);
+  static const Color _d26OnSurfaceVariant = Color(0xFF98989F);
+  static const Color _d26Outline = Color(0xFF2E2E33); // 发丝级分隔线
 
   /// 2027SS：高级感、类苹果风格（深色基底 + 发光蓝 + 暖灰中和）
   static const Color _ss2027Bg = Color(0xFF0D1016);
@@ -104,7 +122,13 @@ class AppTheme {
 
   static const Color loadingIndicatorColor = _onSelected;
 
-  /// 全局统一字号与字重：页面标题与区块标题统一 16px w400，副标题 14px w400
+  /// 全局统一文字规范（所有内置主题共享同一套字号结构，仅字重/字距作为刻意的主题性格保留）：
+  /// headlineLarge 24 / headlineMedium 20 / headlineSmall 18 —— 大标题（欢迎页、空状态、课时标题）
+  /// titleLarge / titleMedium / titleSmall 16 —— 页面/区块/列表标题
+  /// bodyLarge 16 / bodyMedium 15 —— 正文（onSurface）
+  /// bodySmall 14 / labelLarge 14 —— 辅助说明、按钮（onSurfaceVariant）
+  /// labelMedium 12 / labelSmall 11 —— 辅助标签、徽章
+  /// AppBar 与对话框标题统一 16 w600；底部导航 选中 13 w600 / 未选中 12 w400
   static const double _fontSizeAppBar = 16.0;
   static const double _fontSizeTitle = 16.0;
   static const double _fontSizeListTitle = 16.0;
@@ -112,15 +136,49 @@ class AppTheme {
   static const double _fontSizeListSubtitle = 14.0;
   static const double _fontSizeCaption = 12.0;
 
+  /// 全局统一 TextTheme 工厂：字号结构全主题一致；
+  /// [titleWeight]、[labelLargeWeight] 与字距为各主题刻意保留的设计差异（主题性格），
+  /// 页面应优先使用 `Theme.of(context).textTheme.xxx`，避免随意 copyWith 字号/字重。
+  static TextTheme _baseTextTheme({
+    required Color onSurface,
+    required Color onSurfaceVariant,
+    FontWeight titleWeight = FontWeight.w500,
+    FontWeight labelLargeWeight = FontWeight.w400,
+    double? titleLetterSpacing,
+    double? labelLargeLetterSpacing,
+  }) {
+    return TextTheme(
+      headlineLarge: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: 24, letterSpacing: titleLetterSpacing),
+      headlineMedium: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: 20, letterSpacing: titleLetterSpacing),
+      headlineSmall: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: 18, letterSpacing: titleLetterSpacing),
+      titleLarge: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: _fontSizeListTitle, letterSpacing: titleLetterSpacing),
+      titleMedium: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: _fontSizeTitle, letterSpacing: titleLetterSpacing),
+      titleSmall: TextStyle(color: onSurface, fontWeight: titleWeight, fontSize: _fontSizeListTitle, letterSpacing: titleLetterSpacing),
+      bodyLarge: TextStyle(color: onSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
+      bodyMedium: TextStyle(color: onSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
+      bodySmall: TextStyle(color: onSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
+      labelLarge: TextStyle(color: onSurfaceVariant, fontWeight: labelLargeWeight, fontSize: _fontSizeListSubtitle, letterSpacing: labelLargeLetterSpacing),
+      labelMedium: TextStyle(color: onSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
+      labelSmall: TextStyle(color: onSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+    );
+  }
+
   /// 根据主题 ID 返回对应 ThemeData（含 HibiThemeExtension）
   static ThemeData getTheme(AppThemeId id) {
     switch (id) {
+      case AppThemeId.system2026:
+        // 跟随系统在根部 MaterialApp 走 theme+darkTheme 双槽注入，这里仅作兜底
+        return _light2026Theme;
       case AppThemeId.hibi:
         return _hibiTheme;
       case AppThemeId.dark:
         return _darkPureTheme;
       case AppThemeId.light:
         return _lightPureTheme;
+      case AppThemeId.light2026:
+        return _light2026Theme;
+      case AppThemeId.dark2026:
+        return _dark2026Theme;
       case AppThemeId.spring2027:
         return _spring2027Theme;
       case AppThemeId.dreamy:
@@ -160,33 +218,10 @@ class AppTheme {
       ),
       scaffoldBackgroundColor: Colors.transparent,
       // 正文/描述统一 w400；标题、卡片标题可用 w500/w600。使用 copyWith 时请显式指定 fontWeight，避免同句内粗细不一致。
-      textTheme: TextTheme(
-        headlineSmall: const TextStyle(
-          color: _textPrimary,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeListTitle,
-        ),
-        titleLarge: const TextStyle(
-          color: _textPrimary,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeListTitle,
-        ),
-        titleMedium: const TextStyle(
-          color: _textPrimary,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeTitle,
-        ),
-        titleSmall: const TextStyle(
-          color: _textPrimary,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeListTitle,
-        ),
-        bodyLarge: const TextStyle(color: _textPrimary, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: const TextStyle(color: _textSecondary, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: const TextStyle(color: _textSecondary, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: const TextStyle(color: _textSecondary, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: const TextStyle(color: _textSecondary, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: const TextStyle(color: _textSecondary, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _textPrimary,
+        onSurfaceVariant: _textSecondary,
+        titleWeight: FontWeight.w400,
       ),
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
@@ -198,7 +233,7 @@ class AppTheme {
         titleTextStyle: TextStyle(
           color: _textPrimary,
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w600,
         ),
       ),
       // 底部导航：选中 = 浅灰字/图标（深紫底对比）；未选中 = 次要文字色
@@ -252,7 +287,7 @@ class AppTheme {
         titleTextStyle: const TextStyle(
           color: _textPrimary,
           fontSize: 16,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w600,
         ),
         contentTextStyle: const TextStyle(
           color: _textSecondary,
@@ -361,19 +396,13 @@ class AppTheme {
         titleTextStyle: const TextStyle(
           color: Color(0xFFE3E3E3),
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w600,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: Color(0xFFE3E3E3), fontWeight: FontWeight.w400, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: Color(0xFFE3E3E3), fontWeight: FontWeight.w400, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: Color(0xFFE3E3E3), fontWeight: FontWeight.w400, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: Color(0xFFE3E3E3), fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: Color(0xFFB0B0B0), fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: Color(0xFFB0B0B0), fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: Color(0xFFB0B0B0), fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: Color(0xFFB0B0B0), fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: Color(0xFFB0B0B0), fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: const Color(0xFFE3E3E3),
+        onSurfaceVariant: const Color(0xFFB0B0B0),
+        titleWeight: FontWeight.w400,
       ),
       // 底部导航：选中 = 深灰字/图标（蓝底对比）；未选中 = 次要文字色
       navigationBarTheme: NavigationBarThemeData(
@@ -423,7 +452,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.white.withOpacity(0.1), width: 1),
         ),
-        titleTextStyle: const TextStyle(color: Color(0xFFE3E3E3), fontSize: 16, fontWeight: FontWeight.w400),
+        titleTextStyle: const TextStyle(color: Color(0xFFE3E3E3), fontSize: 16, fontWeight: FontWeight.w600),
         contentTextStyle: const TextStyle(color: Color(0xFFB0B0B0), fontSize: 14, fontWeight: FontWeight.w400),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -499,16 +528,10 @@ class AppTheme {
         onError: Colors.white,
       ),
       scaffoldBackgroundColor: Colors.transparent,
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: Color(0xFF1C1C1C), fontWeight: FontWeight.w400, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: Color(0xFF1C1C1C), fontWeight: FontWeight.w400, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: Color(0xFF1C1C1C), fontWeight: FontWeight.w400, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: Color(0xFF1C1C1C), fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: Color(0xFF1C1C1C), fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: Color(0xFF424242), fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: Color(0xFF424242), fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: Color(0xFF424242), fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: Color(0xFF424242), fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: const Color(0xFF1C1C1C),
+        onSurfaceVariant: _lightOnSurfaceVariant,
+        titleWeight: FontWeight.w400,
       ),
       appBarTheme: AppBarTheme(
         backgroundColor: _lightSolidBg,
@@ -519,7 +542,7 @@ class AppTheme {
         titleTextStyle: const TextStyle(
           color: Color(0xFF1C1C1C),
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w600,
         ),
       ),
       // 底部导航：选中 = 深灰字/图标（蓝底对比）；未选中 = 深灰 #5F6368
@@ -570,7 +593,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: Colors.black.withOpacity(0.1), width: 1),
         ),
-        titleTextStyle: const TextStyle(color: Color(0xFF1C1C1C), fontSize: 16, fontWeight: FontWeight.w400),
+        titleTextStyle: const TextStyle(color: Color(0xFF1C1C1C), fontSize: 16, fontWeight: FontWeight.w600),
         contentTextStyle: const TextStyle(color: Color(0xFF424242), fontSize: 14, fontWeight: FontWeight.w400),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -625,6 +648,348 @@ class AppTheme {
     );
   }
 
+  /// 亮色2026SS：iOS 风高级亮色。冷灰分组背景托纯白卡片，系统蓝点缀，
+  /// 发丝级分隔线，更大圆角与更细字重，整体干净克制（2026 设计理念）
+  static ThemeData get _light2026Theme {
+    final theme = ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.light,
+      colorScheme: ColorScheme.light(
+        primary: _l26Primary,
+        onPrimary: Colors.white,
+        primaryContainer: _l26Primary.withOpacity(0.12),
+        onPrimaryContainer: const Color(0xFF2C2C2E),
+        secondary: _l26Primary,
+        onSecondary: Colors.white,
+        surface: _l26Surface,
+        onSurface: _l26OnSurface,
+        surfaceContainerHighest: _l26Elevated,
+        onSurfaceVariant: _l26OnSurfaceVariant,
+        outline: _l26Outline,
+        error: const Color(0xFFFF3B30),
+        onError: Colors.white,
+      ),
+      scaffoldBackgroundColor: Colors.transparent,
+      textTheme: _baseTextTheme(
+        onSurface: _l26OnSurface,
+        onSurfaceVariant: _l26OnSurfaceVariant,
+        titleLetterSpacing: 0.1,
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        iconTheme: IconThemeData(color: _l26OnSurface),
+        titleTextStyle: TextStyle(
+          color: _l26OnSurface,
+          fontSize: _fontSizeAppBar,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.15,
+        ),
+      ),
+      // 底部导航：半透明白底 + 石墨圆角指示。指示器只衬在图标后面，
+      // 因此仅选中图标用白色（落在石墨指示器内）；选中文字在指示器外，必须用深色 onSurface
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: const Color(0xF2FFFFFF),
+        elevation: 0,
+        height: 64,
+        indicatorColor: _l26Primary.withOpacity(0.92),
+        overlayColor: WidgetStateProperty.all(Colors.transparent),
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const IconThemeData(color: Colors.white, size: 24);
+          }
+          return const IconThemeData(color: Color(0xFF8A8A8E), size: 24);
+        }),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const TextStyle(
+              color: _l26OnSurface,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            );
+          }
+          return const TextStyle(
+            color: Color(0xFF8A8A8E),
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+          );
+        }),
+      ),
+      cardTheme: CardTheme(
+        color: _l26Surface.withOpacity(0.92),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: _l26Outline, width: 1),
+        ),
+      ),
+      dialogTheme: DialogTheme(
+        backgroundColor: _l26Surface.withOpacity(0.96),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: const BorderSide(color: _l26Outline, width: 1),
+        ),
+        titleTextStyle: const TextStyle(color: _l26OnSurface, fontSize: 16, fontWeight: FontWeight.w600),
+        contentTextStyle: const TextStyle(color: _l26OnSurfaceVariant, fontSize: 14, fontWeight: FontWeight.w400),
+      ),
+      listTileTheme: const ListTileThemeData(
+        iconColor: _l26Primary,
+        textColor: _l26OnSurface,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: const Color(0xFFE9E9EE),
+        hintStyle: const TextStyle(color: _l26OnSurfaceVariant),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: _l26Primary, width: 1.2),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: _l26Surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+      ),
+      dividerTheme: const DividerThemeData(
+        color: _l26Outline,
+        thickness: 0.5,
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: ButtonStyle(
+          backgroundColor: WidgetStateProperty.all(_l26Primary),
+          foregroundColor: WidgetStateProperty.all(Colors.white),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.all(_l26Primary),
+          side: WidgetStateProperty.all(BorderSide(color: _l26Primary.withOpacity(0.55))),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.all(_l26Primary),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+    );
+    return theme.copyWith(
+      extensions: <ThemeExtension<dynamic>>[
+        const HibiThemeExtension(
+          themeId: AppThemeId.light2026,
+          useImageBackground: false,
+          solidBackgroundColor: _l26Bg,
+        ),
+      ],
+    );
+  }
+
+  /// 暗色2026SS：亮色2026SS 同族深色版。iOS 深色 + 商务银灰点缀（呼应深灰 Logo：
+  /// 石墨底 + 银色线条），近黑分组底托深灰卡片，发丝级分隔线，几何规格与亮色2026SS 一致
+  static ThemeData get _dark2026Theme {
+    final theme = ThemeData(
+      useMaterial3: true,
+      brightness: Brightness.dark,
+      colorScheme: ColorScheme.dark(
+        primary: _d26Primary,
+        onPrimary: _d26Surface,
+        primaryContainer: _d26Primary.withOpacity(0.22),
+        onPrimaryContainer: _d26OnSurface,
+        secondary: _d26Primary,
+        onSecondary: _d26Surface,
+        surface: _d26Surface,
+        onSurface: _d26OnSurface,
+        surfaceContainerHighest: _d26Elevated,
+        onSurfaceVariant: _d26OnSurfaceVariant,
+        outline: _d26Outline,
+        error: const Color(0xFFFF453A),
+        onError: Colors.white,
+      ),
+      scaffoldBackgroundColor: Colors.transparent,
+      textTheme: _baseTextTheme(
+        onSurface: _d26OnSurface,
+        onSurfaceVariant: _d26OnSurfaceVariant,
+        titleLetterSpacing: 0.1,
+      ),
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        iconTheme: IconThemeData(color: _d26OnSurface),
+        titleTextStyle: TextStyle(
+          color: _d26OnSurface,
+          fontSize: _fontSizeAppBar,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.15,
+        ),
+      ),
+      // 底部导航：半透明近黑底 + 银灰圆角指示。指示器只衬在图标后面，
+      // 因此仅选中图标用深色（落在银灰指示器内）；选中文字在指示器外，必须用浅色 onSurface
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: const Color(0xF20E0E10),
+        elevation: 0,
+        height: 64,
+        indicatorColor: _d26Primary.withOpacity(0.92),
+        overlayColor: WidgetStateProperty.all(Colors.transparent),
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const IconThemeData(color: _d26Surface, size: 24);
+          }
+          return const IconThemeData(color: _d26OnSurfaceVariant, size: 24);
+        }),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return const TextStyle(
+              color: _d26OnSurface,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            );
+          }
+          return const TextStyle(
+            color: _d26OnSurfaceVariant,
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+          );
+        }),
+      ),
+      cardTheme: CardTheme(
+        color: _d26Surface.withOpacity(0.92),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: _d26Outline, width: 1),
+        ),
+      ),
+      dialogTheme: DialogTheme(
+        backgroundColor: _d26Surface.withOpacity(0.96),
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(22),
+          side: const BorderSide(color: _d26Outline, width: 1),
+        ),
+        titleTextStyle: const TextStyle(color: _d26OnSurface, fontSize: 16, fontWeight: FontWeight.w600),
+        contentTextStyle: const TextStyle(color: _d26OnSurfaceVariant, fontSize: 14, fontWeight: FontWeight.w400),
+      ),
+      listTileTheme: const ListTileThemeData(
+        iconColor: _d26Primary,
+        textColor: _d26OnSurface,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: const Color(0xFF2A2A2D),
+        hintStyle: const TextStyle(color: _d26OnSurfaceVariant),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: _d26Primary, width: 1.2),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: _d26Surface,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+      ),
+      dividerTheme: const DividerThemeData(
+        color: _d26Outline,
+        thickness: 0.5,
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: ButtonStyle(
+          backgroundColor: WidgetStateProperty.all(_d26Primary),
+          foregroundColor: WidgetStateProperty.all(_d26Surface),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.all(_d26Primary),
+          side: WidgetStateProperty.all(BorderSide(color: _d26Primary.withOpacity(0.55))),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: ButtonStyle(
+          foregroundColor: WidgetStateProperty.all(_d26Primary),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+      segmentedButtonTheme: SegmentedButtonThemeData(
+        style: ButtonStyle(
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        ),
+      ),
+    );
+    return theme.copyWith(
+      extensions: <ThemeExtension<dynamic>>[
+        const HibiThemeExtension(
+          themeId: AppThemeId.dark2026,
+          useImageBackground: false,
+          solidBackgroundColor: _d26Bg,
+        ),
+      ],
+    );
+  }
+
   /// 2027SS：更高级、类苹果风格（深色分层 + 柔和高光 + 更大圆角）
   static ThemeData get _spring2027Theme {
     final theme = ThemeData(
@@ -656,20 +1021,13 @@ class AppTheme {
         titleTextStyle: TextStyle(
           color: _ss2027OnSurface,
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
           letterSpacing: 0.1,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _ss2027OnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: _ss2027OnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: _ss2027OnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: _ss2027OnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _ss2027OnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _ss2027OnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _ss2027OnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: _ss2027OnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _ss2027OnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _ss2027OnSurface,
+        onSurfaceVariant: _ss2027OnSurfaceVariant,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xC80D1016),
@@ -718,7 +1076,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(22),
           side: BorderSide(color: _ss2027Outline, width: 1),
         ),
-        titleTextStyle: const TextStyle(color: _ss2027OnSurface, fontSize: 16, fontWeight: FontWeight.w500),
+        titleTextStyle: const TextStyle(color: _ss2027OnSurface, fontSize: 16, fontWeight: FontWeight.w600),
         contentTextStyle: const TextStyle(color: _ss2027OnSurfaceVariant, fontSize: 14, fontWeight: FontWeight.w400),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -811,19 +1169,12 @@ class AppTheme {
         titleTextStyle: TextStyle(
           color: _dreamOnSurface,
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _dreamOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: _dreamOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: _dreamOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: _dreamOnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _dreamOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _dreamOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _dreamOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: _dreamOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _dreamOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _dreamOnSurface,
+        onSurfaceVariant: _dreamOnSurfaceVariant,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xE8FFF6FF),
@@ -872,7 +1223,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(22),
           side: BorderSide(color: _dreamOutline, width: 1),
         ),
-        titleTextStyle: const TextStyle(color: _dreamOnSurface, fontSize: 16, fontWeight: FontWeight.w500),
+        titleTextStyle: const TextStyle(color: _dreamOnSurface, fontSize: 16, fontWeight: FontWeight.w600),
         contentTextStyle: const TextStyle(color: _dreamOnSurfaceVariant, fontSize: 14, fontWeight: FontWeight.w400),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -965,19 +1316,12 @@ class AppTheme {
         titleTextStyle: TextStyle(
           color: _dreamNightOnSurface,
           fontSize: _fontSizeAppBar,
-          fontWeight: FontWeight.w500,
+          fontWeight: FontWeight.w600,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _dreamNightOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: _dreamNightOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: _dreamNightOnSurface, fontWeight: FontWeight.w500, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: _dreamNightOnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _dreamNightOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _dreamNightOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _dreamNightOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: _dreamNightOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _dreamNightOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _dreamNightOnSurface,
+        onSurfaceVariant: _dreamNightOnSurfaceVariant,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xD9171222),
@@ -1026,7 +1370,7 @@ class AppTheme {
           borderRadius: BorderRadius.circular(22),
           side: BorderSide(color: _dreamNightOutline, width: 1),
         ),
-        titleTextStyle: const TextStyle(color: _dreamNightOnSurface, fontSize: 16, fontWeight: FontWeight.w500),
+        titleTextStyle: const TextStyle(color: _dreamNightOnSurface, fontSize: 16, fontWeight: FontWeight.w600),
         contentTextStyle: const TextStyle(color: _dreamNightOnSurfaceVariant, fontSize: 14, fontWeight: FontWeight.w400),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -1118,16 +1462,13 @@ class AppTheme {
           letterSpacing: 0.6,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _cpOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle, letterSpacing: 0.4),
-        titleMedium: TextStyle(color: _cpOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeTitle, letterSpacing: 0.3),
-        titleSmall: TextStyle(color: _cpOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle, letterSpacing: 0.3),
-        bodyLarge: TextStyle(color: _cpOnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _cpOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _cpOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _cpOnSurfaceVariant, fontWeight: FontWeight.w500, fontSize: _fontSizeListSubtitle, letterSpacing: 0.2),
-        labelMedium: TextStyle(color: _cpOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _cpOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _cpOnSurface,
+        onSurfaceVariant: _cpOnSurfaceVariant,
+        titleWeight: FontWeight.w600,
+        labelLargeWeight: FontWeight.w500,
+        titleLetterSpacing: 0.4,
+        labelLargeLetterSpacing: 0.2,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xD805070C),
@@ -1281,16 +1622,12 @@ class AppTheme {
           letterSpacing: 0.35,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _astralOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle, letterSpacing: 0.25),
-        titleMedium: TextStyle(color: _astralOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeTitle, letterSpacing: 0.2),
-        titleSmall: TextStyle(color: _astralOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle, letterSpacing: 0.2),
-        bodyLarge: TextStyle(color: _astralOnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _astralOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _astralOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _astralOnSurfaceVariant, fontWeight: FontWeight.w500, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: _astralOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _astralOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _astralOnSurface,
+        onSurfaceVariant: _astralOnSurfaceVariant,
+        titleWeight: FontWeight.w600,
+        labelLargeWeight: FontWeight.w500,
+        titleLetterSpacing: 0.25,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xD30A0716),
@@ -1438,62 +1775,18 @@ class AppTheme {
         iconTheme: IconThemeData(color: _astralPhOnSurface),
         titleTextStyle: TextStyle(
           color: _astralPhOnSurface,
-          fontSize: _fontSizeAppBar + 1,
+          fontSize: _fontSizeAppBar,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.15,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(
-          color: _astralPhOnSurface,
-          fontWeight: FontWeight.w600,
-          fontSize: _fontSizeListTitle + 0.5,
-          letterSpacing: 0.12,
-        ),
-        titleMedium: TextStyle(
-          color: _astralPhOnSurface,
-          fontWeight: FontWeight.w600,
-          fontSize: _fontSizeTitle + 0.2,
-          letterSpacing: 0.1,
-        ),
-        titleSmall: TextStyle(
-          color: _astralPhOnSurface,
-          fontWeight: FontWeight.w600,
-          fontSize: _fontSizeListTitle,
-          letterSpacing: 0.08,
-        ),
-        bodyLarge: TextStyle(
-          color: _astralPhOnSurface,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeBody + 1,
-          letterSpacing: 0.02,
-        ),
-        bodyMedium: TextStyle(
-          color: _astralPhOnSurfaceVariant,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeBody,
-        ),
-        bodySmall: TextStyle(
-          color: _astralPhOnSurfaceVariant,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeListSubtitle,
-        ),
-        labelLarge: TextStyle(
-          color: _astralPhOnSurfaceVariant,
-          fontWeight: FontWeight.w500,
-          fontSize: _fontSizeListSubtitle,
-          letterSpacing: 0.08,
-        ),
-        labelMedium: TextStyle(
-          color: _astralPhOnSurfaceVariant,
-          fontWeight: FontWeight.w400,
-          fontSize: _fontSizeCaption,
-        ),
-        labelSmall: TextStyle(
-          color: _astralPhOnSurfaceVariant,
-          fontWeight: FontWeight.w400,
-          fontSize: 11,
-        ),
+      textTheme: _baseTextTheme(
+        onSurface: _astralPhOnSurface,
+        onSurfaceVariant: _astralPhOnSurfaceVariant,
+        titleWeight: FontWeight.w600,
+        labelLargeWeight: FontWeight.w500,
+        titleLetterSpacing: 0.12,
+        labelLargeLetterSpacing: 0.08,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xCC090E20),
@@ -1654,16 +1947,11 @@ class AppTheme {
           letterSpacing: 0.25,
         ),
       ),
-      textTheme: const TextTheme(
-        titleLarge: TextStyle(color: _earthOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle),
-        titleMedium: TextStyle(color: _earthOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeTitle),
-        titleSmall: TextStyle(color: _earthOnSurface, fontWeight: FontWeight.w600, fontSize: _fontSizeListTitle),
-        bodyLarge: TextStyle(color: _earthOnSurface, fontWeight: FontWeight.w400, fontSize: _fontSizeBody + 1),
-        bodyMedium: TextStyle(color: _earthOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeBody),
-        bodySmall: TextStyle(color: _earthOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeListSubtitle),
-        labelLarge: TextStyle(color: _earthOnSurfaceVariant, fontWeight: FontWeight.w500, fontSize: _fontSizeListSubtitle),
-        labelMedium: TextStyle(color: _earthOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: _fontSizeCaption),
-        labelSmall: TextStyle(color: _earthOnSurfaceVariant, fontWeight: FontWeight.w400, fontSize: 11),
+      textTheme: _baseTextTheme(
+        onSurface: _earthOnSurface,
+        onSurfaceVariant: _earthOnSurfaceVariant,
+        titleWeight: FontWeight.w600,
+        labelLargeWeight: FontWeight.w500,
       ),
       navigationBarTheme: NavigationBarThemeData(
         backgroundColor: const Color(0xD9081227),
