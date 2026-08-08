@@ -1,16 +1,14 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import '../../../config/api_config.dart';
 import '../../profile/services/agent_config_service.dart';
+import 'doubao_sauc_protocol.dart';
 
 typedef AsrTextCallback = void Function(String text);
 
-/// 豆包 ASR 流式识别：通过 WebSocket 与后端 `/api/asr/stream` 通信。
-/// 支持附带客户端 ASR 凭据（智能体配置），否则使用服务端 .env。
+/// 豆包 ASR 流式识别：App 直连火山 OpenSpeech（SAUC），不再经 HIBI 后端转发。
 class AsrStreamService {
   WebSocket? _ws;
   StreamSubscription? _wsSub;
@@ -20,9 +18,12 @@ class AsrStreamService {
   String? _lastError;
   int _sentChunks = 0;
   int _sentBytes = 0;
+  int _audioSeq = 2;
   bool _ready = false;
+  bool _closing = false;
   AsrTextCallback? _onPartial;
-  /// 服务端返回 `ready` 之前，先采到的麦克风数据暂存于此，避免「等握手完才开始录音」丢掉句首。
+
+  /// 建链/发 full request 完成前的麦克风缓冲，避免丢句首。
   final List<Uint8List> _preReadyBuffer = <Uint8List>[];
   int _preReadyBytes = 0;
   static const int _maxPreReadyBytes = 128000; // ~4s @ 16kHz mono PCM16
@@ -33,49 +34,70 @@ class AsrStreamService {
     AsrTextCallback? onPartial,
     AsrClientConfig? clientAsr,
   }) async {
-    // 必须先关掉上一轮 WS（含语音模式预热、重复 start），否则旧连接仍收包会错乱 completer，表现为第二次识别无文本。
     await _safeClose();
-    final wsBase = _toWsUrl(ApiConfig.assistantApiBaseUrl.trim());
-    if (wsBase.isEmpty) {
-      _lastError = '未配置后端地址';
+    final asr = clientAsr ?? await AgentConfigService.activeAsrConfig();
+    if (asr == null || !asr.isUsable) {
+      _lastError = '请先在「智能体配置」启用并填写豆包 ASR（APP ID / Access Token）';
       return false;
     }
+
     _onPartial = onPartial;
     _lastPartial = '';
     _finalText = '';
     _lastError = null;
     _sentChunks = 0;
     _sentBytes = 0;
+    _audioSeq = 2;
     _ready = false;
+    _closing = false;
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
     _doneCompleter = Completer<String>();
-    try {
-      final qp = <String, String>{};
-      final asr = clientAsr ?? await AgentConfigService.activeAsrConfig();
-      if (asr != null && asr.isUsable) {
-        qp['app_id'] = asr.appId.trim();
-        qp['token'] = asr.accessToken.trim();
-        qp['resource_id'] = asr.effectiveResourceId;
+
+    final headers = DoubaoSaucProtocol.buildAuthHeaders(
+      appId: asr.appId,
+      accessToken: asr.accessToken,
+      resourceId: asr.effectiveResourceId,
+    );
+    final candidates = <String>[
+      DoubaoSaucProtocol.defaultWsUrl,
+      DoubaoSaucProtocol.defaultWsUrlAsync,
+    ];
+
+    Object? lastErr;
+    for (final url in candidates) {
+      try {
+        debugPrint('[ASR-DIRECT] connect => $url');
+        _ws = await WebSocket.connect(url, headers: headers).timeout(
+          const Duration(seconds: 20),
+        );
+        _wsSub = _ws!.listen(
+          _onEvent,
+          onError: _onError,
+          onDone: _onClosed,
+          cancelOnError: true,
+        );
+
+        // full client request (seq=1)
+        final full = DoubaoSaucProtocol.newFullClientRequest(seq: 1);
+        _ws!.add(full);
+        _ready = true;
+        debugPrint('[ASR-DIRECT] full request sent, ready');
+        _flushPreReady();
+        return true;
+      } catch (e) {
+        lastErr = e;
+        debugPrint('[ASR-DIRECT] connect fail url=$url err=$e');
+        await _safeClose(preserveCompleter: true);
       }
-      final uri = Uri.parse('$wsBase/api/asr/stream').replace(
-        queryParameters: qp.isEmpty ? null : qp,
-      );
-      debugPrint('[ASR-STREAM] connect => ${uri.replace(queryParameters: {
-            ...uri.queryParameters,
-            if (uri.queryParameters.containsKey('token')) 'token': '***',
-          })}');
-      _ws = await WebSocket.connect(uri.toString());
-      _wsSub = _ws!.listen(_onEvent, onError: _onError, onDone: _onClosed);
-      // 不阻塞等待 ready：与麦克风 startStream 并行时，句首音频由 sendAudio 缓冲至 ready 后顺序发出。
-      debugPrint('[ASR-STREAM] ws connected (await server ready via buffer)');
-      return true;
-    } catch (e) {
-      _lastError ??= 'ASR 流式通道连接失败: $e';
-      debugPrint('[ASR-STREAM] start fail: $_lastError');
-      await _safeClose();
-      return false;
     }
+
+    _lastError = 'ASR 直连失败: ${lastErr ?? 'unknown'}';
+    if (!(_doneCompleter?.isCompleted ?? true)) {
+      _doneCompleter!.complete('');
+    }
+    await _safeClose();
+    return false;
   }
 
   void _enqueuePreReady(Uint8List chunk) {
@@ -93,47 +115,65 @@ class AsrStreamService {
   void _flushPreReady() {
     if (_ws == null || !_ready) return;
     for (final c in _preReadyBuffer) {
-      _sentChunks += 1;
-      _sentBytes += c.length;
-      _ws!.add(c);
+      _sendPcmFrame(c, isLast: false);
     }
     if (_preReadyBuffer.isNotEmpty) {
       debugPrint(
-        '[ASR-STREAM] flushed pre-ready chunks=${_preReadyBuffer.length} bytes=$_preReadyBytes',
+        '[ASR-DIRECT] flushed pre-ready chunks=${_preReadyBuffer.length} bytes=$_preReadyBytes',
       );
     }
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
   }
 
+  void _sendPcmFrame(Uint8List pcm, {required bool isLast}) {
+    if (_ws == null || pcm.isEmpty && !isLast) return;
+    final seq = _audioSeq;
+    if (!isLast) _audioSeq += 1;
+    final frame = DoubaoSaucProtocol.newAudioOnlyRequest(
+      seq: seq,
+      pcm: pcm.isEmpty ? Uint8List(0) : pcm,
+      isLast: isLast,
+    );
+    _ws!.add(frame);
+    if (pcm.isNotEmpty) {
+      _sentChunks += 1;
+      _sentBytes += pcm.length;
+    }
+  }
+
   void sendAudio(Uint8List chunk) {
-    if (_ws == null || chunk.isEmpty) return;
+    if (_ws == null || chunk.isEmpty || _closing) return;
     if (!_ready) {
       _enqueuePreReady(chunk);
       return;
     }
-    _sentChunks += 1;
-    _sentBytes += chunk.length;
+    _sendPcmFrame(chunk, isLast: false);
     if (_sentChunks % 10 == 0) {
-      debugPrint('[ASR-STREAM] sent chunks=$_sentChunks bytes=$_sentBytes');
+      debugPrint('[ASR-DIRECT] sent chunks=$_sentChunks bytes=$_sentBytes');
     }
-    _ws!.add(chunk);
   }
 
-  /// 等待服务端 `done`；超时需覆盖后端 ASR 收尾（含豆包侧排队），不宜过短。
+  /// 结束本轮：发送负序号收尾包，等待最终结果。
   Future<String> stopAndGetFinal({required bool cancel}) async {
     final completer = _doneCompleter;
     try {
-      if (_ws != null) {
+      _closing = true;
+      if (_ws != null && _ready) {
         debugPrint(
-          '[ASR-STREAM] stop cancel=$cancel chunks=$_sentChunks bytes=$_sentBytes',
+          '[ASR-DIRECT] stop cancel=$cancel chunks=$_sentChunks bytes=$_sentBytes',
         );
         try {
-          _ws!.add(jsonEncode({'event': cancel ? 'cancel' : 'end'}));
+          // 收尾：空 PCM + is_last
+          _sendPcmFrame(Uint8List(0), isLast: true);
         } catch (_) {}
       }
       if (completer == null) {
-        // 未成功 start（或已 safeClose）时勿用 !，避免 Null check 噪音日志
+        await _safeClose();
+        return '';
+      }
+      if (cancel) {
+        if (!completer.isCompleted) completer.complete('');
         await _safeClose();
         return '';
       }
@@ -142,72 +182,61 @@ class AsrStreamService {
         onTimeout: () => _finalText.isNotEmpty ? _finalText : _lastPartial,
       );
       debugPrint(
-        '[ASR-STREAM] done textLen=${text.trim().length} err=${_lastError ?? ''}',
+        '[ASR-DIRECT] done textLen=${text.trim().length} err=${_lastError ?? ''}',
       );
       await _safeClose();
-      return (cancel ? '' : text).trim();
+      return text.trim();
     } catch (e) {
-      debugPrint('[ASR-STREAM] stop fail err=${_lastError ?? e.toString()}');
+      debugPrint('[ASR-DIRECT] stop fail err=${_lastError ?? e.toString()}');
       await _safeClose();
       return '';
     }
   }
 
   void _onEvent(dynamic event) {
-    if (event is! String) return;
+    if (event is! List<int>) return;
     try {
-      final data = jsonDecode(event) as Map<String, dynamic>;
-      final type = data['event']?.toString() ?? '';
-      final text = (data['text']?.toString() ?? '').trim();
-      if (type == 'ready') {
-        _ready = true;
-        debugPrint('[ASR-STREAM] event=ready');
-        _flushPreReady();
-        return;
-      }
-      if (type == 'partial') {
-        if (text.isNotEmpty) {
-          _lastPartial = text;
-          debugPrint('[ASR-STREAM] event=partial len=${text.length}');
-          _onPartial?.call(text);
-        }
-        return;
-      }
-      if (type == 'final') {
-        if (text.isNotEmpty) {
-          _lastPartial = text;
-          _finalText = text;
-          debugPrint('[ASR-STREAM] event=final len=${text.length}');
-          _onPartial?.call(text);
-        }
-        return;
-      }
-      if (type == 'done') {
-        debugPrint('[ASR-STREAM] event=done len=${text.length}');
-        final done = text.isNotEmpty
-            ? text
-            : (_finalText.isNotEmpty ? _finalText : _lastPartial);
-        if (!(_doneCompleter?.isCompleted ?? true)) {
-          _doneCompleter!.complete(done);
-        }
-        return;
-      }
-      if (type == 'error') {
-        _lastError = text.isNotEmpty
-            ? text
-            : (data['message']?.toString() ?? 'ASR 流式服务错误');
-        debugPrint('[ASR-STREAM] event=error msg=$_lastError');
+      final resp = DoubaoSaucProtocol.parseResponse(Uint8List.fromList(event));
+      final msg = resp.payloadMsg;
+      if (resp.isError || (resp.code != 0 && msg != null)) {
+        final err = (msg?['message'] ?? msg?['msg'] ?? resp.code).toString();
+        _lastError = 'ASR 错误: $err';
+        debugPrint('[ASR-DIRECT] error code=${resp.code} msg=$_lastError');
         if (!(_doneCompleter?.isCompleted ?? true)) {
           _doneCompleter!
               .complete(_finalText.isNotEmpty ? _finalText : _lastPartial);
         }
+        return;
       }
-    } catch (_) {}
+
+      final text = DoubaoSaucProtocol.extractText(msg);
+      final isFinal =
+          resp.isLastPackage || DoubaoSaucProtocol.payloadIsFinal(msg);
+
+      if (text.isNotEmpty) {
+        _lastPartial = text;
+        if (isFinal) _finalText = text;
+        _onPartial?.call(text);
+        debugPrint(
+          '[ASR-DIRECT] ${isFinal ? 'final' : 'partial'} len=${text.length}',
+        );
+      }
+
+      if (resp.isLastPackage || (_closing && isFinal && text.isNotEmpty)) {
+        if (!(_doneCompleter?.isCompleted ?? true)) {
+          final done =
+              _finalText.isNotEmpty ? _finalText : (_lastPartial);
+          _doneCompleter!.complete(done);
+        }
+      }
+    } catch (e) {
+      debugPrint('[ASR-DIRECT] parse fail: $e');
+    }
   }
 
-  void _onError(Object _) {
-    _lastError ??= 'ASR 流式连接异常';
-    debugPrint('[ASR-STREAM] socket onError $_lastError');
+  void _onError(Object e) {
+    _lastError ??= 'ASR 直连异常: $e';
+    debugPrint('[ASR-DIRECT] socket onError $_lastError');
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
     if (!(_doneCompleter?.isCompleted ?? true)) {
@@ -216,9 +245,9 @@ class AsrStreamService {
   }
 
   void _onClosed() {
-    debugPrint('[ASR-STREAM] socket onClosed ready=$_ready');
+    debugPrint('[ASR-DIRECT] socket onClosed ready=$_ready');
     if (!_ready) {
-      _lastError ??= 'ASR 流式连接已关闭';
+      _lastError ??= 'ASR 直连已关闭';
     }
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
@@ -227,7 +256,7 @@ class AsrStreamService {
     }
   }
 
-  Future<void> _safeClose() async {
+  Future<void> _safeClose({bool preserveCompleter = false}) async {
     await _wsSub?.cancel();
     _wsSub = null;
     try {
@@ -235,21 +264,11 @@ class AsrStreamService {
     } catch (_) {}
     _ws = null;
     _ready = false;
+    _closing = false;
     _preReadyBuffer.clear();
     _preReadyBytes = 0;
-  }
-
-  String _toWsUrl(String baseUrl) {
-    if (baseUrl.isEmpty) return '';
-    if (baseUrl.startsWith('https://')) {
-      return 'wss://${baseUrl.substring('https://'.length)}';
+    if (!preserveCompleter) {
+      // completer 由 stop/onEvent 结束；此处不强制 complete 以免竞态
     }
-    if (baseUrl.startsWith('http://')) {
-      return 'ws://${baseUrl.substring('http://'.length)}';
-    }
-    if (baseUrl.startsWith('ws://') || baseUrl.startsWith('wss://')) {
-      return baseUrl;
-    }
-    return 'ws://$baseUrl';
   }
 }

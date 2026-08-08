@@ -1608,37 +1608,38 @@ class _TransferPageState extends State<TransferPage> {
                   ),
                   const SizedBox(height: 20),
                   if (_sendTabIndex == 0) ...[
-                    // 发送区主体加高约 3 倍（电脑端可拖放；移动端为选文件引导区）
+                    // 拖放热区：约屏高 32%，320–480，方便电脑端瞄准
                     Container(
                       width: double.infinity,
-                      height: 220,
+                      height: (MediaQuery.sizeOf(context).height * 0.32)
+                          .clamp(320.0, 480.0),
                       alignment: Alignment.center,
                       padding: const EdgeInsets.symmetric(
-                          vertical: 28, horizontal: 20),
+                          vertical: 36, horizontal: 24),
                       decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(16),
                         border: Border.all(
-                          width: 1.5,
+                          width: 2,
                           color: _draggingFiles
                               ? colorScheme.primary
-                              : colorScheme.outline.withOpacity(0.35),
+                              : colorScheme.outline.withOpacity(0.4),
                         ),
                         color: _draggingFiles
-                            ? colorScheme.primaryContainer.withOpacity(0.25)
+                            ? colorScheme.primaryContainer.withOpacity(0.28)
                             : colorScheme.surfaceContainerHighest
-                                .withOpacity(0.35),
+                                .withOpacity(0.4),
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(
                             Icons.cloud_upload_outlined,
-                            size: 48,
+                            size: 64,
                             color: _draggingFiles
                                 ? colorScheme.primary
                                 : colorScheme.onSurfaceVariant,
                           ),
-                          const SizedBox(height: 16),
+                          const SizedBox(height: 20),
                           Text(
                             _draggingFiles
                                 ? '松开即可发送文件或文件夹'
@@ -1646,8 +1647,9 @@ class _TransferPageState extends State<TransferPage> {
                                     ? '可将文件/文件夹拖放到此区域发送（电脑端）'
                                     : '点下方按钮选择文件并发送'),
                             textAlign: TextAlign.center,
-                            style: theme.textTheme.bodyLarge?.copyWith(
+                            style: theme.textTheme.titleMedium?.copyWith(
                               color: colorScheme.onSurfaceVariant,
+                              height: 1.35,
                             ),
                           ),
                         ],
@@ -1688,7 +1690,8 @@ class _TransferPageState extends State<TransferPage> {
                     ],
                   ] else ...[
                     SizedBox(
-                      height: 220,
+                      height: (MediaQuery.sizeOf(context).height * 0.32)
+                          .clamp(320.0, 480.0),
                       child: TextField(
                         controller: _textController,
                         maxLines: null,

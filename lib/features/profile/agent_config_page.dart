@@ -292,7 +292,7 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
           Text(
             '· 文本对话：选择火山/OpenAI 兼容后可用\n'
             '· Skills（日程/思维导图）：需登录且后端在线，由希比助手调用\n'
-            '· 语音输入：在下方配置豆包 ASR 并启用；经服务端转发识别\n'
+            '· 语音输入：在下方配置豆包 ASR 并启用；App 直连火山识别\n'
             '· 附件：对话气泡可预览并点击打开本地文件',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant,
@@ -342,7 +342,7 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
           const SizedBox(height: 6),
           Text(
             '火山引擎「豆包大模型流式语音识别」。启用后，助理输入栏麦克风可用；'
-            '凭据经 HIBI 后端转发，不会改服务器 .env。',
+            'App 直连 OpenSpeech（不经 HIBI 后端）。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant,
             ),
@@ -352,7 +352,9 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
             dense: true,
             title: const Text('启用语音输入'),
             subtitle: Text(
-              _asrEnabled ? '已开启：需填写 APP ID 与 Access Token' : '关闭时仅在服务端已配 ASR 时可用',
+              _asrEnabled
+                  ? '已开启：需填写 APP ID 与 Access Token'
+                  : '关闭时不可用语音输入',
               style: theme.textTheme.labelSmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
               ),

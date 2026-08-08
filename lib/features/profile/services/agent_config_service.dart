@@ -140,7 +140,7 @@ class AgentProviderConfig {
 }
 
 /// 豆包大模型流式语音识别（火山 OpenSpeech）客户端配置。
-/// 填写并启用后，经 HIBI 后端 `/api/asr/stream` 透传凭据调用；也可仅依赖服务端 .env。
+/// 填写并启用后，由 App 直连 `openspeech.bytedance.com`，不经 HIBI 后端转发。
 class AsrClientConfig {
   const AsrClientConfig({
     this.enabled = false,

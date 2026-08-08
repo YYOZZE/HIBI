@@ -1,55 +1,12 @@
-import 'dart:convert';
-
-import 'package:http/http.dart' as http;
-
-import '../../../config/api_config.dart';
 import '../../profile/services/agent_config_service.dart';
 
-/// 调用后端 /api/asr（豆包 ASR）上传 WAV，返回识别文本。
+/// ASR 可用性检查（豆包流式识别由 [AsrStreamService] App 直连 OpenSpeech）。
 class AsrService {
-  AsrService({String? baseUrl}) : _baseUrl = (baseUrl ?? ApiConfig.assistantApiBaseUrl).trim();
+  AsrService();
 
-  final String _baseUrl;
-
-  String get _configUrl => '$_baseUrl/api/asr/config';
-  String get _asrUrl => '$_baseUrl/api/asr';
-
-  /// 是否可用：本地智能体配置 ASR，或服务端已配置 ASR。
+  /// 仅当「智能体配置」中启用并填写 APP ID / Access Token 时可用。
   Future<bool> isConfigured() async {
     final local = await AgentConfigService.activeAsrConfig();
-    if (local != null) return true;
-    if (_baseUrl.isEmpty) return false;
-    try {
-      final res = await http.get(Uri.parse(_configUrl)).timeout(const Duration(seconds: 6));
-      if (res.statusCode != 200) return false;
-      final data = jsonDecode(res.body) as Map<String, dynamic>?;
-      return data?['configured'] == true || data?['enabled'] == true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// 上传 WAV 字节，返回识别文本；失败抛异常
-  Future<String> recognizeFromWavBytes(List<int> wavBytes) async {
-    if (_baseUrl.isEmpty) throw Exception('未配置后端地址');
-    final request = http.MultipartRequest('POST', Uri.parse(_asrUrl));
-    request.files.add(http.MultipartFile.fromBytes(
-      'file',
-      wavBytes,
-      filename: 'voice.wav',
-    ));
-    final streamed = await request.send().timeout(const Duration(seconds: 35));
-    final res = await http.Response.fromStream(streamed);
-    if (res.statusCode != 200) {
-      String msg = res.body;
-      try {
-        final data = jsonDecode(res.body) as Map<String, dynamic>?;
-        msg = data?['message']?.toString() ?? msg;
-      } catch (_) {}
-      throw Exception(msg);
-    }
-    final data = jsonDecode(res.body) as Map<String, dynamic>?;
-    final text = data?['text']?.toString() ?? '';
-    return text.trim();
+    return local != null;
   }
 }
