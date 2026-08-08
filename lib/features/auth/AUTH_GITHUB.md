@@ -1,5 +1,9 @@
 # GitHub 登录与 Star 门禁（无自建后端）
 
+> **V4.0.1 起默认绕过本门禁**（打开即进主壳、助理开放；LAN 账号校验一并暂关）。  
+> 功能细节、复现与复开指南见封存笔记：[`AUTH_GITHUB_SEALED.md`](./AUTH_GITHUB_SEALED.md)。  
+> 总开关：`lib/config/auth_gate_config.dart` → `bypassGitHubLoginGate`。
+
 自 **3.3.8** 起，客户端以 **GitHub OAuth Device Flow** 作为账号体系，并要求用户已 **Star** 仓库 [`YYOZZE/HIBI`](https://github.com/YYOZZE/HIBI)。无需自建登录服务器。
 
 自 **3.3.10** 起：登录页在 App **内嵌 WebView** 打开 GitHub 验证页（密码只在 GitHub 网页输入）；失败时回退系统浏览器。HTTP 超时加长，错误提示为中文。

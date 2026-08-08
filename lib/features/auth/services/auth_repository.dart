@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../config/api_config.dart';
+import '../../../config/auth_gate_config.dart';
 import '../models/auth_user.dart';
 import 'auth_api.dart';
 import 'account_storage_paths.dart';
@@ -65,12 +66,24 @@ class AuthRepository {
   AuthUser? get currentUser => currentUserNotifier.value;
 
   /// 是否可进主壳（本地 或 GitHub+Star）。
-  bool get canEnterShell =>
-      accessState == AppAccessState.local ||
-      accessState == AppAccessState.githubOk;
+  /// V4.0.1：[AuthGateConfig.bypassGitHubLoginGate] 为 true 时恒为可进（需已有会话）。
+  bool get canEnterShell {
+    if (AuthGateConfig.bypassGitHubLoginGate) {
+      final u = currentUser;
+      return u != null && u.token.isNotEmpty;
+    }
+    return accessState == AppAccessState.local ||
+        accessState == AppAccessState.githubOk;
+  }
 
-  /// 是否可使用助理（仅 GitHub + Star）。
-  bool get canUseAssistant => accessState == AppAccessState.githubOk;
+  /// 是否可使用助理（门禁开启时仅 GitHub + Star）。
+  /// V4.0.1：绕过开关打开时助理保持开放。
+  bool get canUseAssistant {
+    if (AuthGateConfig.bypassGitHubLoginGate) {
+      return canEnterShell;
+    }
+    return accessState == AppAccessState.githubOk;
+  }
 
   /// 兼容旧调用：曾表示「GitHub 会话可进 App」；现等同 [canUseAssistant]。
   bool get canEnterApp => canUseAssistant;
@@ -90,7 +103,17 @@ class AuthRepository {
   set authApi(AuthApi? value) => _api = value;
 
   Future<void> _loadFuture = Future<void>.value();
-  Future<void> ensureLoaded() => _loadFuture;
+
+  Future<void> ensureLoaded() async {
+    await _loadFuture;
+    // V4.0.1：绕过 GitHub 门禁时，无会话则自动本地账号，打开即进。
+    if (AuthGateConfig.bypassGitHubLoginGate) {
+      final u = currentUser;
+      if (u == null || u.token.isEmpty) {
+        await loginAsLocal();
+      }
+    }
+  }
 
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();

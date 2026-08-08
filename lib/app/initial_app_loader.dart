@@ -8,12 +8,13 @@ import 'main_shell.dart';
 import 'theme_notifier.dart';
 import 'theme_policy_service.dart';
 
+import '../config/auth_gate_config.dart';
 import '../features/auth/github_login_page.dart';
 import '../features/auth/models/auth_user.dart';
 import '../features/auth/services/auth_repository.dart';
 import '../features/schedule/schedule_event_store.dart';
 
-/// 应用启动：加载后经 GitHub + Star 门禁，再进主壳。
+/// 应用启动：加载后经门禁（或 V4.0.1 绕过）再进主壳。
 class InitialAppLoader extends StatefulWidget {
   const InitialAppLoader({super.key});
 
@@ -59,6 +60,10 @@ class _InitialAppLoaderState extends State<InitialAppLoader> {
     if (!_ready) {
       return const LoadingPage();
     }
+    // V4.0.1：绕过 GitHub 登录页，直接主壳（代码保留，见 AUTH_GITHUB_SEALED.md）
+    if (AuthGateConfig.bypassGitHubLoginGate) {
+      return const MainShell();
+    }
     return const _GitHubAuthGate();
   }
 }
@@ -66,6 +71,8 @@ class _InitialAppLoaderState extends State<InitialAppLoader> {
 /// 门禁：仅 [AuthRepository.canEnterShell] 进主壳（本地账号或 GitHub+Star）；
 /// 未登录 / GitHub 未 Star 一律展示登录页（永不白屏）。
 /// 回到前台时复检 Star，取消 Star 后再次拦截。
+///
+/// 当 [AuthGateConfig.bypassGitHubLoginGate] 为 true 时不会挂载本组件。
 class _GitHubAuthGate extends StatefulWidget {
   const _GitHubAuthGate();
 

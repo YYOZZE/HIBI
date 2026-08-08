@@ -6,6 +6,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+import '../../../config/auth_gate_config.dart';
 import '../../assistant/services/assistant_repository.dart';
 import '../../auth/services/account_storage_paths.dart';
 import '../../auth/services/auth_repository.dart';
@@ -99,7 +100,7 @@ class LanSyncService {
   String get connectionPassword => _connectionPassword;
 
   /// 稳定账号键：GitHub → login（小写）；本地账号 → 稳定 local id。
-  /// 握手字段 `accountId` 用此值比对「账号一致才连接」。
+  /// 握手仍携带 `accountId`；是否强制一致见 [accountsMatch]。
   static String? resolveAccountId() {
     final user = AuthRepository.instance.currentUser;
     if (user == null) return null;
@@ -118,7 +119,13 @@ class LanSyncService {
     return null;
   }
 
+  /// 双方账号是否一致。
+  /// V4.0.1：[AuthGateConfig.bypassGitHubLoginGate] 为 true 时**不校验**，
+  /// 握手可仍带 accountId，但不因不一致拒绝（密码等逻辑保留）。
   static bool accountsMatch(String? a, String? b) {
+    if (AuthGateConfig.bypassGitHubLoginGate) {
+      return true;
+    }
     final left = (a ?? '').trim().toLowerCase();
     final right = (b ?? '').trim().toLowerCase();
     if (left.isEmpty || right.isEmpty) return false;
