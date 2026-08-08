@@ -1169,40 +1169,42 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
     });
   }
 
-  /// 选中方块的缩放手柄：右下角（宽高同调）+ 右边中点（仅调宽）+ 下边中点（仅调高）。
-  /// 尺寸按 1/_scale 放大；角手柄热区更大且置于最上层，避免被边手柄盖住。
+  /// 选中方块：仅右下角一个缩放手柄（宽高同调）。
+  /// 可视按钮贴在方框角上；周围大热区内按下即拖拽缩放（不触发方块拖动）。
   List<Widget> _buildBlockResizeHandles(CanvasBlock block) {
-    // 屏幕像素热区 → 画布坐标；角区更大，边区略小并避开角区重叠
-    final cornerHit = 120.0 / _scale;
-    final edgeHit = 64.0 / _scale;
-    final grip = 28.0 / _scale;
-    final outward = 10.0 / _scale; // 角手柄中心略移出方块，减少与 Draggable 抢手势
+    // 屏幕约 26px 可视 / 约 112px 热区（随画布缩放换算）
+    final grip = 26.0 / _scale;
+    final hit = 112.0 / _scale;
     final strokeWidth = 2.0 / _scale;
     final colorScheme = Theme.of(context).colorScheme;
+    // 中心落在方框右下角：按钮贴角，不外飘
+    final cx = block.x + block.width;
+    final cy = block.y + block.height;
 
-    Widget gripBox(_ResizeGrip gripKind, {required double visual}) => MouseRegion(
-          cursor: gripKind == _ResizeGrip.corner
-              ? SystemMouseCursors.resizeDownRight
-              : gripKind == _ResizeGrip.right
-                  ? SystemMouseCursors.resizeLeftRight
-                  : SystemMouseCursors.resizeUpDown,
+    return [
+      Positioned(
+        left: cx - hit / 2,
+        top: cy - hit / 2,
+        width: hit,
+        height: hit,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.resizeDownRight,
           child: Listener(
             behavior: HitTestBehavior.opaque,
-            onPointerDown: (_) => _onResizeStart(block, gripKind),
+            onPointerDown: (_) => _onResizeStart(block),
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onPanStart: (_) => _onResizeStart(block, gripKind),
-              onPanUpdate: (d) => _onResizeUpdate(block, gripKind, d),
+              onPanStart: (_) => _onResizeStart(block),
+              onPanUpdate: (d) => _onResizeUpdate(block, d),
               onPanEnd: (_) => _onResizeEnd(),
               onPanCancel: _onResizeEnd,
               child: Center(
                 child: IgnorePointer(
                   child: CustomPaint(
-                    size: Size(visual, visual),
+                    size: Size(grip, grip),
                     painter: _ResizeGripPainter(
                       color: colorScheme.primary,
                       lineColor: colorScheme.onPrimary,
-                      kind: gripKind,
                       strokeWidth: strokeWidth,
                     ),
                   ),
@@ -1210,90 +1212,38 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
               ),
             ),
           ),
-        );
-
-    Positioned at(
-      double cx,
-      double cy,
-      _ResizeGrip kind, {
-      required double hit,
-    }) =>
-        Positioned(
-          left: cx - hit / 2,
-          top: cy - hit / 2,
-          width: hit,
-          height: hit,
-          child: gripBox(kind, visual: kind == _ResizeGrip.corner ? grip : grip * 0.85),
-        );
-
-    final handles = <Widget>[];
-    // 边手柄：仅在足够大时显示，并内缩远离角点，避免盖住角缩放
-    final edgeInset = cornerHit * 0.55;
-    if (block.height > edgeInset * 2 + 24) {
-      handles.add(
-        at(
-          block.x + block.width + outward * 0.35,
-          block.y + block.height / 2,
-          _ResizeGrip.right,
-          hit: edgeHit,
         ),
-      );
-    }
-    if (block.width > edgeInset * 2 + 24) {
-      handles.add(
-        at(
-          block.x + block.width / 2,
-          block.y + block.height + outward * 0.35,
-          _ResizeGrip.bottom,
-          hit: edgeHit,
-        ),
-      );
-    }
-    // 角手柄最后加入 → Stack 最上层，保证右下角始终可点
-    handles.add(
-      at(
-        block.x + block.width + outward,
-        block.y + block.height + outward,
-        _ResizeGrip.corner,
-        hit: cornerHit,
       ),
-    );
-    return handles;
+    ];
   }
 
-  void _onResizeStart(CanvasBlock block, _ResizeGrip kind) {
+  void _onResizeStart(CanvasBlock block) {
     _markUserInteracting();
     _resizingBlockId = block.id;
     _resizeStartSize = Size(block.width, block.height);
-    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box != null && box.hasSize) {
-      // 以手柄中心（方块对应边/角）为起点，避免触点偏移造成跳变
-      final startCanvas = switch (kind) {
-        _ResizeGrip.corner => Offset(block.x + block.width, block.y + block.height),
-        _ResizeGrip.right => Offset(block.x + block.width, block.y + block.height / 2),
-        _ResizeGrip.bottom => Offset(block.x + block.width / 2, block.y + block.height),
-      };
-      _resizeStartCanvas = startCanvas;
-    }
+    // 以方框右下角为锚点，避免触点偏移造成跳变
+    _resizeStartCanvas = Offset(block.x + block.width, block.y + block.height);
   }
 
-  void _onResizeUpdate(CanvasBlock block, _ResizeGrip kind, DragUpdateDetails d) {
-    if (_resizingBlockId != block.id || _resizeStartSize == null || _resizeStartCanvas == null) return;
+  void _onResizeUpdate(CanvasBlock block, DragUpdateDetails d) {
+    if (_resizingBlockId != block.id ||
+        _resizeStartSize == null ||
+        _resizeStartCanvas == null) {
+      return;
+    }
     _markUserInteracting();
     final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
     final canvasPos = _screenToCanvas(box.globalToLocal(d.globalPosition));
-    final dx = canvasPos.dx - (_resizeStartCanvas!.dx);
-    final dy = canvasPos.dy - (_resizeStartCanvas!.dy);
+    final dx = canvasPos.dx - _resizeStartCanvas!.dx;
+    final dy = canvasPos.dy - _resizeStartCanvas!.dy;
     final maxW = math.min(_kBlockMaxWidth, _canvasWidth - block.x);
     final maxH = math.min(_kBlockMaxHeight, _canvasHeight - block.y);
     setState(() {
-      if (kind != _ResizeGrip.bottom) {
-        block.width = (_resizeStartSize!.width + dx).clamp(_kBlockMinWidth, maxW);
-      }
-      if (kind != _ResizeGrip.right) {
-        block.height = (_resizeStartSize!.height + dy).clamp(_kBlockMinHeight, maxH);
-      }
+      block.width =
+          (_resizeStartSize!.width + dx).clamp(_kBlockMinWidth, maxW);
+      block.height =
+          (_resizeStartSize!.height + dy).clamp(_kBlockMinHeight, maxH);
       _resetConnectedLinesToStraight(block.id);
     });
   }
@@ -3257,29 +3207,27 @@ class _ColumnWidget extends StatelessWidget {
   }
 }
 
-/// 缩放手柄位置：右下角（宽高）/ 右边中点（宽）/ 下边中点（高）
-enum _ResizeGrip { corner, right, bottom }
-
-/// 缩放手柄可视：圆角小方块底 + 对比色描边 + 角标/边标线条。
+/// 右下角缩放手柄可视：圆角小方块 + ⌟ 角标。
 /// 描边与内部线条用 [lineColor]（通常为主题 onPrimary），
-/// 保证 primary 本身偏暗的主题（如 hibi 深紫）下抓手在深色画布上仍然醒目。
+/// 保证 primary 偏暗时在深色画布上仍醒目。
 class _ResizeGripPainter extends CustomPainter {
   const _ResizeGripPainter({
     required this.color,
     required this.lineColor,
-    required this.kind,
     required this.strokeWidth,
   });
 
   final Color color;
   final Color lineColor;
-  final _ResizeGrip kind;
   final double strokeWidth;
 
   @override
   void paint(Canvas canvas, Size size) {
     final bg = Paint()..color = color;
-    final r = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(size.width * 0.28));
+    final r = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      Radius.circular(size.width * 0.28),
+    );
     canvas.drawRRect(r, bg);
 
     final ring = Paint()
@@ -3296,21 +3244,16 @@ class _ResizeGripPainter extends CustomPainter {
     final w = size.width;
     final h = size.height;
     final pad = w * 0.26;
-    if (kind == _ResizeGrip.corner) {
-      // 角标：⌟ 形折线
-      final path = Path()
-        ..moveTo(w - pad, pad)
-        ..lineTo(w - pad, h - pad)
-        ..lineTo(pad, h - pad);
-      canvas.drawPath(path, line);
-    } else if (kind == _ResizeGrip.right) {
-      canvas.drawLine(Offset(w / 2, pad), Offset(w / 2, h - pad), line);
-    } else {
-      canvas.drawLine(Offset(pad, h / 2), Offset(w - pad, h / 2), line);
-    }
+    final path = Path()
+      ..moveTo(w - pad, pad)
+      ..lineTo(w - pad, h - pad)
+      ..lineTo(pad, h - pad);
+    canvas.drawPath(path, line);
   }
 
   @override
   bool shouldRepaint(_ResizeGripPainter old) =>
-      old.color != color || old.lineColor != lineColor || old.kind != kind || old.strokeWidth != strokeWidth;
+      old.color != color ||
+      old.lineColor != lineColor ||
+      old.strokeWidth != strokeWidth;
 }

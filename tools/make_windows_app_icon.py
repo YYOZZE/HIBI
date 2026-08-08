@@ -47,12 +47,12 @@ PREVIEW_DIR = os.path.join(ROOT, "tools", "_icon_preview")
 SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 MASTER = 1024
 
-# 画布边距（透明）：加大后任务栏上底板与周围有明显“浮起”间隙（接近微信）
-PAD_FRAC = 0.10
-# 超椭圆指数：越小越圆。~2.6 对角切入约 20–22% 边长，观感接近微信任务栏
-SQUIRCLE_N = 2.6
+# 画布边距（透明）：深色 logo 在深色桌面上也要能看出圆角轮廓（接近 PS 浮起感）
+PAD_FRAC = 0.12
+# 超椭圆指数：越小越圆。~2.4 对角切入约 22–24% 边长，观感接近 Adobe/Win11 应用图标
+SQUIRCLE_N = 2.4
 # 羽化宽度（相对边长）；小尺寸在 remask 时另有下限
-FEATHER_FRAC = 0.010
+FEATHER_FRAC = 0.012
 
 
 def _candidate_sources() -> list[str]:
@@ -202,14 +202,14 @@ def verify_ico(path: str) -> None:
                 if a[i, i] > 128:
                     cut = i
                     break
-            min_cut = max(5, int(0.18 * s))
+            min_cut = max(5, int(0.20 * s))
             assert cut >= min_cut, "尺寸 %d 圆角不够明显: cut=%d need>=%d" % (
                 s,
                 cut,
                 min_cut,
             )
             t_frac = float((a < 40).sum()) / float(a.size)
-            assert t_frac >= 0.18, "尺寸 %d 透明区占比过低: %.3f" % (s, t_frac)
+            assert t_frac >= 0.22, "尺寸 %d 透明区占比过低: %.3f" % (s, t_frac)
             print(
                 "OK %d: corner_alpha=%r cut=%dpx (%.1f%%) transparent_frac=%.3f"
                 % (s, corners, cut, 100.0 * cut / s, t_frac)
@@ -235,6 +235,15 @@ def main() -> int:
     for s in (16, 32, 40, 48, 256):
         p = os.path.join(PREVIEW_DIR, "windows_app_icon_%d.png" % s)
         images[SIZES.index(s)].save(p, "PNG")
+        print("preview:", p)
+
+    # 深/浅底预览：确认圆角在深色桌面背景下仍清晰（避免“看起来像直角方块”）
+    for bg_name, bg_rgb in (("on_dark", (32, 32, 32)), ("on_light", (240, 240, 240))):
+        plate = Image.new("RGBA", (256, 256), bg_rgb + (255,))
+        icon = images[SIZES.index(256)].resize((220, 220), Image.Resampling.LANCZOS)
+        plate.paste(icon, ((256 - 220) // 2, (256 - 220) // 2), icon)
+        p = os.path.join(PREVIEW_DIR, "windows_app_icon_256_%s.png" % bg_name)
+        plate.save(p, "PNG")
         print("preview:", p)
 
     verify_ico(OUT_ICO)
