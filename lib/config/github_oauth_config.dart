@@ -9,7 +9,9 @@
 /// 在 GitHub → Settings → Developer settings → OAuth Apps 新建应用：
 /// - Homepage URL：`https://github.com/YYOZZE/HIBI`
 /// - Authorization callback URL：可填 `http://127.0.0.1`（Device Flow 实际不依赖回调）
-/// - 启用 Device Flow（若界面有开关）
+/// - **必须启用 Device Flow**（详情页勾选 Enable Device Flow 并保存）
+///
+/// 客户端优先内嵌 WebView 打开验证页；密码只在 GitHub 网页输入，勿在 App 内做账号密码框。
 class GitHubOAuthConfig {
   GitHubOAuthConfig._();
 

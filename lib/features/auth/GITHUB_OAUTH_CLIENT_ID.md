@@ -276,7 +276,8 @@ App 从后台回到前台时，会对已登录用户再次 `refreshGitHubStarSta
 |------|----------|------|
 | 登录页提示未配置 Client ID | 构建未带 `GITHUB_CLIENT_ID`，且 `defaultClientId` 为空 | 按 §4.2 重新构建 |
 | 拿到的是 GitHub App 的 Client ID，登录异常 | 建错成 **GitHub Apps** | 改建 **OAuth Apps**，用 OAuth 的 Client ID 重新构建 |
-| 获取设备码失败 | 未开 Device Flow；Client ID 打错；网络拦 GitHub | OAuth App 打开 Device Flow；检查 ID；检查网络 |
+| 获取设备码失败 / 超时 | 未开 Device Flow；Client ID 打错；网络拦 GitHub | OAuth App **必须**打开 Device Flow；检查 ID；确认可访问 github.com；3.3.10 起超时已加长并有中文重试提示 |
+| 内嵌登录页打不开 / GitHub 提示不支持浏览器 | WebView UA 被拦截或 WebView2 未就绪 | 点「系统浏览器」外开完成授权；Windows 需可用 WebView2 |
 | 一直「等待授权」 | 用户未在浏览器确认；码过期 | 重新发起登录；在时限内输入 user_code |
 | `access_denied` | 用户点了拒绝 | 重新登录并允许 |
 | 已登录但进不去 | 未 Star `YYOZZE/HIBI` | 打开仓库点 Star，再点「我已 Star」 |

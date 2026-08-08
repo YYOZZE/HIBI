@@ -2,8 +2,22 @@
 
 自 **3.3.8** 起，客户端以 **GitHub OAuth Device Flow** 作为账号体系，并要求用户已 **Star** 仓库 [`YYOZZE/HIBI`](https://github.com/YYOZZE/HIBI)。无需自建登录服务器。
 
+自 **3.3.10** 起：登录页在 App **内嵌 WebView** 打开 GitHub 验证页（密码只在 GitHub 网页输入）；失败时回退系统浏览器。HTTP 超时加长，错误提示为中文。
+
 > **Client ID 详细技术笔记**（含「勿建 GitHub App」、表单对照、发版注入、排障）：  
 > [`GITHUB_OAUTH_CLIENT_ID.md`](./GITHUB_OAUTH_CLIENT_ID.md)
+
+---
+
+## 为何 App 内没有「GitHub 账号密码」输入框？
+
+GitHub **禁止**第三方应用收集用户名/密码（也不安全）。正确方式是：用户在 **github.com** 网页完成登录与授权，App 只拿到 OAuth token。
+
+希比流程对用户的直觉应是：
+
+1. 点「使用 GitHub 登录」
+2. 在 App 内嵌页（或系统浏览器）用 GitHub 账号密码登录并授权
+3. 回到希比，按提示 Star 仓库后继续使用
 
 ---
 
@@ -16,6 +30,8 @@
 
 直达：**https://github.com/settings/developers** → 选 **OAuth Apps** → **New OAuth App**。
 
+**务必在 OAuth App 详情页勾选 Enable Device Flow 并保存**，否则申请设备码会失败。
+
 ---
 
 ## 创建 OAuth App（推荐照抄）
@@ -26,8 +42,6 @@
 4. 点 **Register application**
 5. 详情页勾选 **Enable Device Flow** 并保存
 6. 复制 **Client ID**（不要创建/使用 Client Secret）
-
-若你已在 GitHub App 表单里填了名字和主页：点 **Cancel**，把同样信息填到上面的 OAuth App 即可。Webhook、Expire tokens、Only on this account 等均为 GitHub App 项，希比当前实现不使用。
 
 ---
 
@@ -48,14 +62,24 @@ flutter build windows --release --dart-define=GITHUB_CLIENT_ID=Ov23liXXXXXXXX
 
 ---
 
-## 流程
+## 流程（3.3.10）
 
 1. App 向 `https://github.com/login/device/code` 申请 `user_code`（请求体带 `client_id`）
-2. 用户在浏览器打开验证页并输入代码
-3. App 轮询拿到 `access_token`，调用 `GET /user`
+2. **优先**在 App 内嵌 WebView 打开验证页（Windows=`webview_windows`，Android/iOS=`webview_flutter`；Chrome 系 UA）；失败或拦截则外跳系统浏览器
+3. 用户在 GitHub 网页登录并授权；App 轮询拿到 `access_token`，调用 `GET /user`
 4. 调用 `GET /user/starred/YYOZZE/HIBI`：`204` 已 Star，`404` 未 Star
 5. 未 Star → 引导打开仓库 Star，并提供「重新检查」
 6. Token 优先写入 `flutter_secure_storage`，并同步一份到 SharedPreferences 以便恢复
+
+网络：单次请求超时约 55s，连接超时约 25s；失败时展示中文说明（需能访问 github.com），并提供重试。
+
+### 方案对照（已选型 B）
+
+| 方案 | 说明 | 结论 |
+|------|------|------|
+| A. Authorization Code + loopback | 需回调/本机监听，配置更重 | 未采用 |
+| **B. 内嵌 WebView + Device Flow** | 验证页嵌进 App，外层继续轮询 | **已落地** |
+| C. 仅外跳系统浏览器 | 兜底 | 内嵌失败时使用 |
 
 ---
 
@@ -64,7 +88,8 @@ flutter build windows --release --dart-define=GITHUB_CLIENT_ID=Ov23liXXXXXXXX
 | 文件 | 作用 |
 |------|------|
 | `lib/config/github_oauth_config.dart` | client_id / 仓库常量 |
-| `lib/features/auth/services/github_oauth_service.dart` | Device Flow + Star API |
+| `lib/features/auth/services/github_oauth_service.dart` | Device Flow + Star API + 友好错误 |
+| `lib/features/auth/widgets/github_device_webview.dart` | 内嵌 GitHub 验证页 |
 | `lib/features/auth/github_login_page.dart` | 登录 / Star 引导 UI |
 | `lib/app/initial_app_loader.dart` | 启动门禁 |
 | `lib/features/auth/services/auth_repository.dart` | `loginWithGitHub` / 持久化 |
