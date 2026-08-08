@@ -1,4 +1,4 @@
-/// 当前登录用户信息（与后端返回一致时可从 JSON 解析）
+/// 当前登录用户信息
 class AuthUser {
   const AuthUser({
     required this.userId,
@@ -6,19 +6,35 @@ class AuthUser {
     this.nickname,
     this.avatarUrl,
     required this.token,
+    this.githubLogin,
+    this.authProvider = 'legacy',
   });
 
   final String userId;
-  /// 登录账号：手机号或邮箱
+  /// 登录账号：手机号/邮箱，或 `github:<login>`
   final String phoneOrEmail;
   /// 展示用昵称，可选
   final String? nickname;
   /// 头像地址（可为 http(s) URL 或本地文件路径）
   final String? avatarUrl;
-  /// 访问接口用的令牌，退出时由前端清除
+  /// 访问接口用的令牌（后端 Bearer 或 GitHub OAuth access token）
   final String token;
+  /// GitHub 用户名（login）
+  final String? githubLogin;
+  /// `github` | `legacy` | `mock`
+  final String authProvider;
 
-  String get displayName => nickname?.trim().isNotEmpty == true ? nickname! : phoneOrEmail;
+  bool get isGitHub =>
+      authProvider == 'github' ||
+      (githubLogin != null && githubLogin!.trim().isNotEmpty);
+
+  String get displayName {
+    if (nickname?.trim().isNotEmpty == true) return nickname!;
+    if (githubLogin != null && githubLogin!.trim().isNotEmpty) {
+      return githubLogin!;
+    }
+    return phoneOrEmail;
+  }
 
   AuthUser copyWith({
     String? userId,
@@ -26,6 +42,8 @@ class AuthUser {
     String? nickname,
     String? avatarUrl,
     String? token,
+    String? githubLogin,
+    String? authProvider,
   }) {
     return AuthUser(
       userId: userId ?? this.userId,
@@ -33,6 +51,8 @@ class AuthUser {
       nickname: nickname ?? this.nickname,
       avatarUrl: avatarUrl ?? this.avatarUrl,
       token: token ?? this.token,
+      githubLogin: githubLogin ?? this.githubLogin,
+      authProvider: authProvider ?? this.authProvider,
     );
   }
 }

@@ -76,13 +76,13 @@
 
 ## 四、前后端逻辑摘要
 
-1. **不强制登录**：未登录可全功能使用，个人中心显示「本地账户」，点头像再进登录/注册。
-2. **注册**：需邀请码；成功后 `setActiveUser` → pull → push，数据写入当前账号目录。
-3. **退出/换账号**：先 push 当前 token →（可选）logout API → `cancelPendingPush` → 活动目录切回 `local` → reload，**不删除**其他账号目录。
-4. **助理发消息**：前端组 `message` + `history` + `agent_name` / `agent_role` → POST `/api/chat` → 回复写入本地 messages 文件。
+1. **GitHub 登录门禁（3.3.8+）**：启动需用 GitHub OAuth Device Flow 登录，并已 Star [`YYOZZE/HIBI`](https://github.com/YYOZZE/HIBI)；无自建账号后端。配置见 `lib/features/auth/AUTH_GITHUB.md` 与 `lib/config/github_oauth_config.dart`（`--dart-define=GITHUB_CLIENT_ID=`）。
+2. **可选云同步**：若仍配置了 `authApiBaseUrl`，旧后端 token 路径可继续 pull/push；GitHub 门禁身份**不会**走自建同步。
+3. **退出/换账号**：清除本机 GitHub token 与门禁状态 → 活动目录切回 `local` → reload，**不删除**其他账号目录。
+4. **助理发消息**：希比助手走端侧 ClientAbp；其他智能体可走 `/api/chat`；本地 `messages_*.json` 持久化。
 5. **传输**：UDP 发现 + TCP 传文件/文本；接收端 body 必须缓冲后再写入文件（见传输笔记），否则会得到空文件。
 
-配置入口：`lib/config/api_config.dart`（`assistantApiBaseUrl`、`authApiBaseUrl` 等）。
+配置入口：`lib/config/api_config.dart`、`lib/config/github_oauth_config.dart`。
 
 ---
 
@@ -112,7 +112,8 @@ flutter run
 
 | 文档 | 内容 |
 |------|------|
-| `lib/features/auth/AUTH_SPEC.md` | 前端认证与同步约定，供后端对接 |
+| `lib/features/auth/AUTH_GITHUB.md` | GitHub Device Flow + Star 门禁（无后端） |
+| `lib/features/auth/AUTH_SPEC.md` | 旧版自建认证与同步约定（可选后端） |
 | `backend_jideshi_hibi_app/AUTH_SYNC_DEPLOY.md` | 注册登录、SQLite、Docker 持久化、接口列表 |
 | `lib/features/mind/MIND_NODE_SPEC.md` | 画布、方块/连线、缩放、贴边、工具栏 |
 | `lib/features/transfer/TRANSFER_DISCOVERY_NOTES.md` | UDP 端口、防火墙、空文件修复、传输记录 |

@@ -116,7 +116,7 @@ class ChatSessionService {
 
     if (trimmed.isEmpty && sendableAtt.isEmpty) {
       if (videoOnlyNotes.isNotEmpty) {
-        repository.addMessage(
+        await repository.addMessage(
           agentId,
           ChatMessage(
             role: 'assistant',
@@ -173,7 +173,7 @@ class ChatSessionService {
       attachments: persistedAtts,
       topicLabel: topicRef?.displayLabel,
     );
-    repository.addMessage(agentId, userMsg);
+    await repository.addMessage(agentId, userMsg);
     _bump(agentId);
 
     final item = _QueuedSend(
@@ -244,7 +244,7 @@ class ChatSessionService {
       final useBackend = token != null && token.isNotEmpty;
       final customModel = await AgentConfigService.activeChatConfig();
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId);
         return;
       }
       final attPayload =
@@ -274,10 +274,10 @@ class ChatSessionService {
         ]);
       } catch (e) {
         if (_isStale(agentId, gen) || cancelled || cancelWaiter.isCompleted) {
-          _writeCancelled(item.repository, agentId);
+          await _writeCancelled(item.repository, agentId);
           return;
         }
-        item.repository.addMessage(
+        await item.repository.addMessage(
           agentId,
           ChatMessage(role: 'assistant', content: _friendlyChatError(e)),
         );
@@ -289,7 +289,7 @@ class ChatSessionService {
           replyOrError is _CancelSentinel ||
           _isStale(agentId, gen) ||
           cancelWaiter.isCompleted) {
-        _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId);
         // 后台请求仍可能完成，结果丢弃
         unawaited(replyFuture.catchError((_) => ''));
         return;
@@ -299,27 +299,26 @@ class ChatSessionService {
       // 端侧 ABP 已写本地日程；若仍走后端 tools，则 pull 合并云端结果。
       if (useBackend && !HibiAssistant.isBuiltInId(agentId)) {
         await UserSyncScheduler.pullAfterAssistantToolUse();
-      } else if (HibiAssistant.isBuiltInId(agentId)) {
-        // 端侧写盘后通知日程页刷新
-        UserSyncScheduler.syncEpoch.value++;
       }
+      // 希比助手端侧已写 ScheduleEventStore（eventsNotifier），勿 bump syncEpoch：
+      // 会触发聊天页 _loadMessages 的服务端 merge，冲掉本地完整历史。
 
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId);
         return;
       }
 
-      item.repository.addMessage(
+      await item.repository.addMessage(
         agentId,
         ChatMessage(role: 'assistant', content: reply),
       );
       _bump(agentId);
     } catch (e) {
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId);
         return;
       }
-      item.repository.addMessage(
+      await item.repository.addMessage(
         agentId,
         ChatMessage(role: 'assistant', content: _friendlyChatError(e)),
       );
@@ -334,8 +333,8 @@ class ChatSessionService {
   bool _isStale(String agentId, int gen) =>
       (_generation[agentId] ?? 0) != gen;
 
-  void _writeCancelled(AssistantRepository repository, String agentId) {
-    repository.addMessage(
+  Future<void> _writeCancelled(AssistantRepository repository, String agentId) async {
+    await repository.addMessage(
       agentId,
       ChatMessage(role: 'assistant', content: '（已打断）'),
     );

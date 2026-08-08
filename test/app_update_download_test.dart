@@ -234,20 +234,22 @@ void main() {
   });
 
   group('下载候选 URL 构建', () {
-    test('github.com 链接追加镜像候选，其他链接原样返回', () {
+    test('github.com 链接默认镜像优先，直连垫底', () {
       const gh =
           'https://github.com/YYOZZE/HIBI/releases/download/HIBI-2023_v3.1.0/Hibi2023_Setup_3.1.0.exe';
-      final candidates = buildDownloadUrlCandidates(gh);
+      final candidates = buildDownloadUrlCandidates(gh, mirrorFirst: true);
       expect(candidates.length, 1 + kDownloadMirrors.length);
-      expect(candidates.first, gh);
+      expect(candidates.last, gh);
       for (var i = 0; i < kDownloadMirrors.length; i++) {
-        expect(candidates[i + 1], '${kDownloadMirrors[i]}$gh');
+        expect(candidates[i], '${kDownloadMirrors[i]}$gh');
       }
       // 镜像列表本身应为完整 https 前缀
       for (final m in kDownloadMirrors) {
         expect(m.startsWith('https://'), isTrue);
         expect(m.endsWith('/'), isTrue);
       }
+      final directFirst = buildDownloadUrlCandidates(gh, mirrorFirst: false);
+      expect(directFirst.first, gh);
     });
 
     test('非 github.com 链接与非法链接不追加镜像', () {
@@ -296,8 +298,11 @@ void main() {
         expect(p.downloadedBytes, _SlowDownloadServer.totalBytes);
         expect(await File(p.filePath!).length(),
             _SlowDownloadServer.totalBytes);
-        expect(messages.any((m) => m.contains('镜像 1')), isTrue,
-            reason: '切换到镜像时应有「镜像 1」进度提示，实际消息：$messages');
+        expect(
+          messages.any((m) => m.contains('加速源') || m.contains('镜像')),
+          isTrue,
+          reason: '切换到加速源时应有进度提示，实际消息：$messages',
+        );
       } finally {
         await server.dispose();
       }
@@ -541,7 +546,10 @@ void main() {
         expect(p.state, AppUpdateDownloadState.completed,
             reason: '超时后应回退镜像完成下载，实际 ${p.state}（${p.message}）');
         expect(p.downloadedBytes, _SlowDownloadServer.totalBytes);
-        expect(messages.any((m) => m.contains('镜像 1')), isTrue);
+        expect(
+          messages.any((m) => m.contains('加速源') || m.contains('镜像')),
+          isTrue,
+        );
       } finally {
         for (final s in heldSockets) {
           s.destroy();

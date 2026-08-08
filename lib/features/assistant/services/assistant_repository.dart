@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -161,9 +162,12 @@ class AssistantRepository {
     } catch (_) {}
   }
 
-  void addMessage(String agentId, ChatMessage message) {
+  /// 按 agent 串行落盘，避免并发 _saveMessages 互相覆盖。
+  final Map<String, Future<void>> _saveLocks = {};
+
+  Future<void> addMessage(String agentId, ChatMessage message) async {
     _messages.putIfAbsent(agentId, () => []).add(message);
-    _saveMessages(agentId);
+    await _saveMessages(agentId);
   }
 
   /// 用服务端消息列表替换本地缓存（按 id 去重）
@@ -173,30 +177,40 @@ class AssistantRepository {
   }
 
   /// 按消息 id 删除单条（不存在则忽略）
-  void removeMessageById(String agentId, String messageId) {
+  Future<void> removeMessageById(String agentId, String messageId) async {
     final list = _messages[agentId];
     if (list == null) return;
     list.removeWhere((m) => m.id == messageId);
-    _saveMessages(agentId);
+    await _saveMessages(agentId);
   }
 
   /// 批量按 id 删除；删完后持久化一次
-  void removeMessagesByIds(String agentId, Set<String> messageIds) {
+  Future<void> removeMessagesByIds(String agentId, Set<String> messageIds) async {
     if (messageIds.isEmpty) return;
     final list = _messages[agentId];
     if (list == null) return;
     list.removeWhere((m) => messageIds.contains(m.id));
-    _saveMessages(agentId);
+    await _saveMessages(agentId);
   }
 
   Future<void> _saveMessages(String agentId) async {
+    final prev = _saveLocks[agentId] ?? Future<void>.value();
+    final done = Completer<void>();
+    _saveLocks[agentId] = done.future;
+    await prev;
     try {
-      final list = _messages[agentId] ?? [];
+      final list = List<ChatMessage>.from(_messages[agentId] ?? const []);
       final dir = await _dataDir();
       final file = File('${dir.path}/messages_$agentId.json');
       await file.writeAsString(jsonEncode(list.map((m) => m.toJson()).toList()));
       UserSyncScheduler.requestPush();
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      done.complete();
+      if (identical(_saveLocks[agentId], done.future)) {
+        _saveLocks.remove(agentId);
+      }
+    }
   }
 
   /// 登录后从服务端写回 assistant 目录后调用：清空内存并重新加载

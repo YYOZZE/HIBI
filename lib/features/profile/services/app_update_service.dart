@@ -26,23 +26,50 @@ const String kUpdateGithubReleasesPage =
 /// `ghproxy.net` 响应快（约 1.6s）；`gh-proxy.com` 可用但响应慢（约 17s）。
 /// 同日实测 `ghfast.top`、`mirror.ghproxy.com` 连接超时，未纳入。
 /// 公共镜像可用性随时间变化，可按需更新本列表。
+///
+/// 也可用 `--dart-define=UPDATE_MIRRORS=https://a/,https://b/` 覆盖（逗号分隔，须以 `/` 结尾）。
 const List<String> kDownloadMirrors = [
   'https://ghproxy.net/',
   'https://gh-proxy.com/',
 ];
 
-/// 构建下载候选 URL 列表：原始 URL 在前，其后为各镜像前缀拼接的备选。
-/// 仅对 host 为 `github.com` 的链接追加镜像（Release 资产会 302 到
-/// `objects.githubusercontent.com`，国内直连常超时）；其他链接原样返回。
-List<String> buildDownloadUrlCandidates(String originalUrl) {
+/// 是否镜像优先。国内默认 true，避免先卡在 GitHub 直连 15s 超时。
+/// 海外可 `--dart-define=UPDATE_MIRROR_FIRST=false`。
+const bool kUpdateMirrorFirst = bool.fromEnvironment(
+  'UPDATE_MIRROR_FIRST',
+  defaultValue: true,
+);
+
+List<String> _effectiveMirrors() {
+  const raw = String.fromEnvironment('UPDATE_MIRRORS', defaultValue: '');
+  if (raw.trim().isEmpty) return kDownloadMirrors;
+  final list = raw
+      .split(',')
+      .map((e) => e.trim())
+      .where((e) => e.startsWith('http') && e.endsWith('/'))
+      .toList();
+  return list.isEmpty ? kDownloadMirrors : list;
+}
+
+/// 构建下载候选 URL 列表。
+///
+/// 默认 [mirrorFirst]=true：镜像在前、GitHub 直连垫底，缩短国内首连等待。
+/// 仅对 host 为 `github.com` 的链接追加镜像；其他链接原样返回。
+List<String> buildDownloadUrlCandidates(
+  String originalUrl, {
+  bool? mirrorFirst,
+}) {
   final uri = Uri.tryParse(originalUrl);
   if (uri == null || uri.host.toLowerCase() != 'github.com') {
     return <String>[originalUrl];
   }
-  return <String>[
-    originalUrl,
-    for (final mirror in kDownloadMirrors) '$mirror$originalUrl',
-  ];
+  final mirrors = _effectiveMirrors();
+  final mirrored = [for (final m in mirrors) '$m$originalUrl'];
+  final preferMirror = mirrorFirst ?? kUpdateMirrorFirst;
+  if (preferMirror) {
+    return <String>[...mirrored, originalUrl];
+  }
+  return <String>[originalUrl, ...mirrored];
 }
 
 enum AppUpdateCheckResult { updateAvailable, upToDate, failed }
@@ -555,9 +582,9 @@ class AppUpdateDownloadTask {
 
   final String url;
 
-  /// 连接/响应等待超时（15s）；测试可覆盖以缩短用例耗时。
+  /// 连接/响应等待超时；默认缩短为 5s，失败更快切下一候选。测试可覆盖。
   @visibleForTesting
-  static Duration debugConnectTimeout = const Duration(seconds: 15);
+  static Duration debugConnectTimeout = const Duration(seconds: 5);
 
   /// 传输中断后的自动重试次数（不含首次）。
   @visibleForTesting
@@ -589,6 +616,10 @@ class AppUpdateDownloadTask {
   Completer<void>? _runCompleter;
   int _autoRetryLeft = 0;
   DateTime? _lastNotifyAt;
+  /// 上次成功建立传输的候选索引；中断续传时优先从此索引起，避免反复卡在慢直连。
+  int _preferredCandidateIndex = 0;
+  /// 当前正在传输的候选索引（传输失败时可切下一镜像续传）。
+  int _activeCandidateIndex = 0;
 
   AppUpdateDownloadState get state => progressNotifier.value.state;
 
@@ -692,20 +723,36 @@ class AppUpdateDownloadTask {
     Object? lastError;
     var sawConnectionError = false;
 
-    for (var i = 0; i < candidates.length; i++) {
+    // 从上次成功候选起轮转，再扫完整列表，减少国内反复卡在慢源。
+    final order = <int>[];
+    final start = _preferredCandidateIndex.clamp(0, candidates.length - 1);
+    for (var i = start; i < candidates.length; i++) {
+      order.add(i);
+    }
+    for (var i = 0; i < start; i++) {
+      order.add(i);
+    }
+
+    for (final i in order) {
       if (_cancelled) return;
       final candidateUri = Uri.tryParse(candidates[i]);
       if (candidateUri == null || !candidateUri.hasScheme) continue;
-      if (i > 0 && !_resumeFromPartial) {
+      final isMirror = candidates[i] != url;
+      if (i != start && !_resumeFromPartial) {
         _downloaded = 0;
         _total = null;
-        _emit(AppUpdateDownloadState.downloading,
-            message: '直连失败，正在通过镜像 $i 下载…');
-      } else if (i > 0 && _resumeFromPartial) {
-        _emit(AppUpdateDownloadState.downloading,
-            message: '直连失败，正在通过镜像 $i 续传…');
+        _emit(
+          AppUpdateDownloadState.downloading,
+          message: isMirror ? '正在通过加速源下载…' : '正在直连 GitHub 下载…',
+        );
+      } else if (i != start && _resumeFromPartial) {
+        _emit(
+          AppUpdateDownloadState.downloading,
+          message: isMirror ? '正在通过加速源续传…' : '正在直连 GitHub 续传…',
+        );
       }
 
+      _activeCandidateIndex = i;
       final ok = await _tryCandidate(
         candidateUri,
         onConnectionError: (e) {
@@ -716,7 +763,10 @@ class AppUpdateDownloadTask {
           lastError = e;
         },
       );
-      if (ok) return;
+      if (ok) {
+        _preferredCandidateIndex = i;
+        return;
+      }
       if (_cancelled) return;
     }
 
@@ -889,14 +939,17 @@ class AppUpdateDownloadTask {
   }
 
   /// 传输中断：保留半成品；若仍有自动重试额度则静默 Range 续传。
+  /// 连续失败时推进首选候选索引，避免永远卡在慢直连。
   /// 返回 true 表示已安排自动续传（调用方仍应 `_finishRun` 结束当前流）。
   bool _handleTransferFailure(String message) {
     if (_autoRetryLeft > 0 && !_cancelled && _file != null && _downloaded > 0) {
       _autoRetryLeft--;
       _resumeFromPartial = true;
+      // 当前候选传输失败：下次从下一候选开始（含镜像）
+      _preferredCandidateIndex = _activeCandidateIndex + 1;
       _emit(
         AppUpdateDownloadState.downloading,
-        message: '连接中断，正在重试续传（剩 $_autoRetryLeft 次）…',
+        message: '连接中断，正在切换线路续传（剩 $_autoRetryLeft 次）…',
       );
       unawaited(_autoResumeAfterFailure());
       return true;

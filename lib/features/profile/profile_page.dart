@@ -27,7 +27,7 @@ class ProfilePage extends StatelessWidget {
               theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
           surfaceTintColor: Colors.transparent,
           title: const Text('退出登录'),
-          content: const Text('确定要退出登录吗？退出后仍以本地账户使用，可随时再登录。'),
+          content: const Text('确定要退出 GitHub 登录吗？退出后需重新授权并确认已 Star 本仓库。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -56,7 +56,7 @@ class ProfilePage extends StatelessWidget {
               theme.dialogTheme.backgroundColor ?? theme.colorScheme.surface,
           surfaceTintColor: Colors.transparent,
           title: const Text('更换账户'),
-          content: const Text('将退出当前账户，返回后可登录其他账号。'),
+          content: const Text('将退出当前 GitHub 账户，返回后可使用其他 GitHub 账号登录。'),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(ctx).pop(),
@@ -162,8 +162,16 @@ class ProfilePage extends StatelessWidget {
     AuthUser? user,
     bool isLoggedIn,
   ) {
-    final displayName = isLoggedIn ? user!.displayName : '本地账户';
-    final subtitle = isLoggedIn ? user!.phoneOrEmail : '点击头像登录，不登录也可正常使用';
+    final displayName = isLoggedIn
+        ? (user!.githubLogin != null
+            ? '@${user.githubLogin}'
+            : user.displayName)
+        : '未登录';
+    final subtitle = isLoggedIn
+        ? (user!.isGitHub
+            ? 'GitHub 已授权 · 已 Star YYOZZE/HIBI'
+            : user.phoneOrEmail)
+        : '点击头像使用 GitHub 登录';
 
     return _ProfileCard(
       child: Padding(

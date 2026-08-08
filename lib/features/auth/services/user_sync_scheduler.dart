@@ -19,11 +19,17 @@ class UserSyncScheduler {
   static const Duration _pushDebounce = Duration(milliseconds: 300);
   static const Duration _pullCanvasInterval = Duration(milliseconds: 500);
 
-  /// 有登录态且非 Mock 时才同步
+  /// 有登录态且非 Mock / 非 GitHub 门禁身份时才同步（GitHub 无自建后端）
   static bool get _canSync {
     final u = AuthRepository.instance.currentUser;
     if (u == null) return false;
+    if (u.isGitHub) return false;
     if (u.token.startsWith('mock_')) return false;
+    if (u.token.startsWith('gho_') ||
+        u.token.startsWith('ghu_') ||
+        u.token.startsWith('github_pat_')) {
+      return false;
+    }
     return ApiConfig.isAuthApiConfigured;
   }
 

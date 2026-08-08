@@ -8,10 +8,12 @@ import 'main_shell.dart';
 import 'theme_notifier.dart';
 import 'theme_policy_service.dart';
 
+import '../features/auth/github_login_page.dart';
+import '../features/auth/models/auth_user.dart';
 import '../features/auth/services/auth_repository.dart';
 import '../features/schedule/schedule_event_store.dart';
 
-/// 应用启动：加载权限与资源后直接进主壳；不强制登录，个人中心以「本地账户」展示，点头像再登录
+/// 应用启动：加载后经 GitHub + Star 门禁，再进主壳。
 class InitialAppLoader extends StatefulWidget {
   const InitialAppLoader({super.key});
 
@@ -57,6 +59,59 @@ class _InitialAppLoaderState extends State<InitialAppLoader> {
     if (!_ready) {
       return const LoadingPage();
     }
-    return const MainShell();
+    return const _GitHubAuthGate();
+  }
+}
+
+/// 未登录 / 未 Star 时展示 GitHub 登录页；通过后进入主壳。
+/// 回到前台时复检 Star，取消 Star 后再次拦截。
+class _GitHubAuthGate extends StatefulWidget {
+  const _GitHubAuthGate();
+
+  @override
+  State<_GitHubAuthGate> createState() => _GitHubAuthGateState();
+}
+
+class _GitHubAuthGateState extends State<_GitHubAuthGate>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      final u = AuthRepository.instance.currentUser;
+      if (u != null && u.isGitHub) {
+        unawaited(AuthRepository.instance.refreshGitHubStarStatus());
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final auth = AuthRepository.instance;
+    return ValueListenableBuilder<AuthUser?>(
+      valueListenable: auth.currentUserNotifier,
+      builder: (context, user, _) {
+        return ValueListenableBuilder<bool>(
+          valueListenable: auth.githubAccessGrantedNotifier,
+          builder: (context, starred, _) {
+            if (user != null && user.isGitHub && starred) {
+              return const MainShell();
+            }
+            return const GitHubLoginPage(embedded: true);
+          },
+        );
+      },
+    );
   }
 }

@@ -338,14 +338,14 @@ class _AssistantPageState extends State<AssistantPage> {
                   size: 64, color: colorScheme.outline),
               const SizedBox(height: 20),
               Text(
-                '请登录后使用助理功能',
+                '请使用 GitHub 登录后使用助理',
                 style: theme.textTheme.titleLarge
                     ?.copyWith(color: colorScheme.onSurface),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 12),
               Text(
-                '本地账户无法使用智能体与对话，登录后可同步并使用助理服务。',
+                '需 GitHub 账号登录并 Star 本仓库后，方可使用智能体与对话。',
                 style: theme.textTheme.bodyMedium
                     ?.copyWith(color: colorScheme.onSurfaceVariant),
                 textAlign: TextAlign.center,
@@ -358,7 +358,7 @@ class _AssistantPageState extends State<AssistantPage> {
                   );
                 },
                 icon: const Icon(Icons.login),
-                label: const Text('去登录'),
+                label: const Text('GitHub 登录'),
               ),
             ],
           ),

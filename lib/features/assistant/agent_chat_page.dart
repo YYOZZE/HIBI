@@ -18,6 +18,7 @@ import '../auth/services/user_sync_scheduler.dart';
 import 'models/agent.dart';
 import 'models/chat_attachment.dart';
 import 'models/chat_message.dart';
+import 'models/hibi_assistant.dart';
 import 'models/mind_topic_ref.dart';
 import 'services/assistant_api.dart';
 import 'services/assistant_repository.dart';
@@ -170,8 +171,13 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   }
 
   Future<void> _loadMessages() async {
-    // 1) 先立刻展示本地缓存，避免打开空白
-    await widget.repository.loadMessages(widget.agent.id, force: true);
+    // 1) 先立刻展示本地缓存，避免打开空白。
+    // 内存已有消息时勿 force 覆盖，避免与异步落盘竞态把刚写入的回复冲掉。
+    final hasMemory = widget.repository.getMessages(widget.agent.id).isNotEmpty;
+    await widget.repository.loadMessages(
+      widget.agent.id,
+      force: !hasMemory,
+    );
     if (mounted) {
       setState(() {
         _messages = widget.repository.getMessages(widget.agent.id).toList();
@@ -183,9 +189,14 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     // 进行中的发送任务：勿用云端列表覆盖本地待回复消息
     if (_session.isLoading(widget.agent.id)) return;
 
+    // 希比助手走端侧 ClientAbp，对话不进后端 conversation；禁止服务端 merge 覆盖本地历史。
+    if (HibiAssistant.isBuiltInId(widget.agent.id)) return;
+
     // 2) 登录态后台拉取云端，成功后再合并刷新（失败保留本地）
     final token = AuthRepository.instance.currentUser?.token;
     if (token == null || token.isEmpty) return;
+    // GitHub OAuth token 不是后端 Bearer，跳过云端会话合并
+    if (token.startsWith('gho_') || token.startsWith('github_pat_')) return;
 
     try {
       final convId = await widget.api.getOrCreateConversationId(
@@ -225,17 +236,18 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       }
       if (serverMsgs.isEmpty) return;
 
+      // 以本地全量为基，再并入服务端同 id 更新；避免丢弃已有 srv_ 历史。
       final local = widget.repository.getMessages(widget.agent.id);
-      final localPending = local.where((m) => !m.id.startsWith('srv_')).toList();
-      final byId = <String, ChatMessage>{};
+      final byId = <String, ChatMessage>{
+        for (final m in local) m.id: m,
+      };
       for (final m in serverMsgs) {
         byId[m.id] = m;
       }
-      for (final m in localPending) {
-        byId.putIfAbsent(m.id, () => m);
-      }
       final merged = byId.values.toList()
         ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      // 服务端明显更短时不整表替换，防止不完整列表冲掉本地完整历史
+      if (merged.length < local.length) return;
       await widget.repository.replaceMessages(widget.agent.id, merged);
       if (mounted && !_session.isLoading(widget.agent.id)) {
         setState(() {
@@ -249,7 +261,14 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   }
 
   void _onSyncEpoch() {
-    // 方案 B：聊天历史以服务端为准；同步 epoch 触发时直接重新拉取会话消息并刷新 UI。
+    // 同步 epoch 可能只是日程刷新；希比助手仅刷新本地列表，不做服务端 merge。
+    if (HibiAssistant.isBuiltInId(widget.agent.id)) {
+      if (!mounted) return;
+      setState(() {
+        _messages = widget.repository.getMessages(widget.agent.id).toList();
+      });
+      return;
+    }
     unawaited(_loadMessages());
   }
 
