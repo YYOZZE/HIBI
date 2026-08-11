@@ -3,10 +3,11 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'app_update_service.dart';
 
-/// Android 下载保活：WakeLock + 通知栏进度，降低锁屏/黑屏时进程被挂起的概率。
+/// Android 下载保活：前台服务 (FGS) + 通知栏进度，保证锁屏/黑屏时继续下载。
 /// iOS/桌面仅尽力更新通知（无前台服务）。
 class AppUpdateDownloadKeepAlive {
   AppUpdateDownloadKeepAlive._();
@@ -21,6 +22,7 @@ class AppUpdateDownloadKeepAlive {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
   bool _ready = false;
+  bool _fgsActive = false;
   bool _wakeHeld = false;
 
   Future<void> ensureReady() async {
@@ -49,6 +51,11 @@ class AppUpdateDownloadKeepAlive {
             showBadge: false,
           ),
         );
+        // Android 13+：无通知权限时无法展示 FGS 通知，下载易被系统限制
+        final status = await Permission.notification.status;
+        if (!status.isGranted) {
+          await Permission.notification.request();
+        }
       }
       _ready = true;
     } catch (e) {
@@ -58,11 +65,24 @@ class AppUpdateDownloadKeepAlive {
 
   Future<void> begin() async {
     await ensureReady();
-    await _acquireWakeLock();
+    if (Platform.isAndroid) {
+      await _startForegroundService(
+        title: '正在下载更新',
+        body: '准备开始…',
+        ongoing: true,
+        indeterminate: true,
+      );
+    } else {
+      await _acquireWakeLock();
+    }
   }
 
   Future<void> end({bool clearNotification = true}) async {
-    await _releaseWakeLock();
+    if (Platform.isAndroid) {
+      await _stopForegroundService(clear: clearNotification);
+    } else {
+      await _releaseWakeLock();
+    }
     if (clearNotification) {
       try {
         await _plugin.cancel(_notificationId);
@@ -86,6 +106,7 @@ class AppUpdateDownloadKeepAlive {
     var maxProgress = 0;
     var progress = 0;
     var indeterminate = false;
+    var useFgs = false;
 
     switch (p.state) {
       case AppUpdateDownloadState.downloading:
@@ -93,7 +114,12 @@ class AppUpdateDownloadKeepAlive {
         body = percent != null
             ? '$percent% · ${AppUpdateService.fmtBytes(p.downloadedBytes)}'
             : AppUpdateService.fmtBytes(p.downloadedBytes);
+        if (p.speedBytesPerSec != null && p.speedBytesPerSec! > 0) {
+          body =
+              '$body · ${AppUpdateService.fmtBytes(p.speedBytesPerSec!)}/s';
+        }
         ongoing = true;
+        useFgs = true;
         if (frac != null) {
           maxProgress = 100;
           progress = (frac * 100).round();
@@ -104,6 +130,7 @@ class AppUpdateDownloadKeepAlive {
         title = '更新下载已暂停';
         body = percent != null ? '已完成 $percent%' : '可返回应用继续';
         ongoing = true;
+        useFgs = true;
         if (frac != null) {
           maxProgress = 100;
           progress = (frac * 100).round();
@@ -123,6 +150,24 @@ class AppUpdateDownloadKeepAlive {
         return;
       case AppUpdateDownloadState.idle:
         return;
+    }
+
+    // 下载中/暂停：Android 走前台服务通知（系统级保活）
+    if (Platform.isAndroid && useFgs) {
+      await _updateForegroundService(
+        title: title,
+        body: body,
+        progress: progress,
+        maxProgress: maxProgress,
+        indeterminate: indeterminate,
+        ongoing: ongoing,
+      );
+      return;
+    }
+
+    // 完成/失败：先停 FGS，再用普通通知提示（可点击）
+    if (Platform.isAndroid && _fgsActive) {
+      await _stopForegroundService(clear: true);
     }
 
     try {
@@ -160,6 +205,82 @@ class AppUpdateDownloadKeepAlive {
     }
   }
 
+  Future<void> _startForegroundService({
+    required String title,
+    required String body,
+    required bool ongoing,
+    required bool indeterminate,
+    int progress = 0,
+    int maxProgress = 0,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>('startUpdateDownloadForeground', {
+        'title': title,
+        'body': body,
+        'progress': progress,
+        'maxProgress': maxProgress,
+        'indeterminate': indeterminate,
+        'ongoing': ongoing,
+      });
+      _fgsActive = true;
+    } catch (e) {
+      debugPrint('startUpdateDownloadForeground failed: $e');
+      // 回退：至少持有 Activity 侧 WakeLock
+      await _acquireWakeLock();
+    }
+  }
+
+  Future<void> _updateForegroundService({
+    required String title,
+    required String body,
+    required int progress,
+    required int maxProgress,
+    required bool indeterminate,
+    required bool ongoing,
+  }) async {
+    try {
+      await _channel.invokeMethod<bool>('updateUpdateDownloadForeground', {
+        'title': title,
+        'body': body,
+        'progress': progress,
+        'maxProgress': maxProgress,
+        'indeterminate': indeterminate,
+        'ongoing': ongoing,
+      });
+      _fgsActive = true;
+    } catch (e) {
+      debugPrint('updateUpdateDownloadForeground failed: $e');
+      if (!_fgsActive) {
+        await _startForegroundService(
+          title: title,
+          body: body,
+          ongoing: ongoing,
+          indeterminate: indeterminate,
+          progress: progress,
+          maxProgress: maxProgress,
+        );
+      }
+    }
+  }
+
+  Future<void> _stopForegroundService({required bool clear}) async {
+    if (!_fgsActive && !_wakeHeld) {
+      try {
+        await _channel.invokeMethod<bool>('stopUpdateDownloadForeground', {
+          'clear': clear,
+        });
+      } catch (_) {}
+      return;
+    }
+    try {
+      await _channel.invokeMethod<bool>('stopUpdateDownloadForeground', {
+        'clear': clear,
+      });
+    } catch (_) {}
+    _fgsActive = false;
+    await _releaseWakeLock();
+  }
+
   Future<void> _acquireWakeLock() async {
     if (!Platform.isAndroid || _wakeHeld) return;
     try {
@@ -174,5 +295,29 @@ class AppUpdateDownloadKeepAlive {
       await _channel.invokeMethod<bool>('releaseWakeLock');
     } catch (_) {}
     _wakeHeld = false;
+  }
+
+  /// 是否已忽略电池优化（未忽略时息屏易被国产 ROM 杀进程）。
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    try {
+      return await _channel
+              .invokeMethod<bool>('isIgnoringBatteryOptimizations') ??
+          false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 弹出系统「忽略电池优化」对话框；已忽略则直接返回 true。
+  Future<bool> requestIgnoreBatteryOptimizations() async {
+    if (kIsWeb || !Platform.isAndroid) return true;
+    try {
+      return await _channel
+              .invokeMethod<bool>('requestIgnoreBatteryOptimizations') ??
+          false;
+    } catch (_) {
+      return false;
+    }
   }
 }

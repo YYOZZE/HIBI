@@ -23,6 +23,11 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 更新包后台下载：前台服务（锁屏/黑屏保活） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 首次大包下载时可引导关闭电池优化（国产 ROM 息屏杀进程常见） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- 助理语音输入（语音转文字） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 助理多模态：拍照 / 拍视频 -->
@@ -35,6 +40,12 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:networkSecurityConfig="@xml/network_security_config">
+        <!-- 更新下载前台服务：息屏/锁屏时继续传输 -->
+        <service
+            android:name=".UpdateDownloadForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

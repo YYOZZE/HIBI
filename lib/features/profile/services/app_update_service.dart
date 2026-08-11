@@ -72,6 +72,55 @@ List<String> buildDownloadUrlCandidates(
   return <String>[originalUrl, ...mirrored];
 }
 
+/// 对候选 URL 做短 Range 探测，按首包耗时升序重排（失败的排到后面）。
+///
+/// 用于下载前选最快加速源，避免长时间卡在慢镜像。
+Future<List<String>> probeAndOrderDownloadCandidates(
+  List<String> candidates, {
+  Duration timeout = const Duration(seconds: 4),
+}) async {
+  if (candidates.length <= 1) return List<String>.from(candidates);
+
+  Future<({String url, int ms, bool ok})> probe(String url) async {
+    final sw = Stopwatch()..start();
+    final client = HttpClient()..connectionTimeout = timeout;
+    try {
+      final uri = Uri.parse(url);
+      final req = await client.getUrl(uri).timeout(timeout);
+      // 只取首字节，测 TTFB；多数镜像支持 Range
+      req.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+      final resp = await req.close().timeout(timeout);
+      final code = resp.statusCode;
+      // 只消费首个分片后强制断开，避免不支持 Range 时把整包拖完
+      try {
+        await resp
+            .timeout(timeout)
+            .first
+            .timeout(timeout);
+      } catch (_) {}
+      try {
+        client.close(force: true);
+      } catch (_) {}
+      final ok = code == HttpStatus.ok ||
+          code == HttpStatus.partialContent ||
+          code == HttpStatus.requestedRangeNotSatisfiable;
+      return (url: url, ms: sw.elapsedMilliseconds, ok: ok);
+    } catch (_) {
+      try {
+        client.close(force: true);
+      } catch (_) {}
+      return (url: url, ms: timeout.inMilliseconds + 1, ok: false);
+    }
+  }
+
+  final results = await Future.wait(candidates.map(probe));
+  results.sort((a, b) {
+    if (a.ok != b.ok) return a.ok ? -1 : 1;
+    return a.ms.compareTo(b.ms);
+  });
+  return [for (final r in results) r.url];
+}
+
 enum AppUpdateCheckResult { updateAvailable, upToDate, failed }
 
 /// 手动检查（「关于版本」页「检测更新」）的细粒度结果：
@@ -573,10 +622,10 @@ class AppUpdateDownloadProgress {
 ///
 /// 状态机：`idle → downloading → paused → downloading … → completed`；
 /// `downloading/paused → cancelled`；`downloading → error`（可再次 start 重试）。
-/// `start()` 按候选 URL（直链 → 镜像）依次尝试；连接层失败会切换候选。
+/// `start()` 按候选 URL（镜像竞速排序 → 直链）依次尝试；连接层失败会切换候选。
 /// 传输中断进入 error 时**保留半成品**，重试时带 `Range` 断点续传。
 /// 暂停优先用响应流 pause/resume（TCP 背压）；若连接已失效则 Range 续传。
-/// 取消会删除临时半成品；Android 下载期间持有 WakeLock 并更新通知栏进度。
+/// 取消会删除临时半成品；Android 下载期间启动前台服务并更新通知栏进度。
 class AppUpdateDownloadTask {
   AppUpdateDownloadTask._(this.url);
 
@@ -588,7 +637,15 @@ class AppUpdateDownloadTask {
 
   /// 传输中断后的自动重试次数（不含首次）。
   @visibleForTesting
-  static int debugMaxAutoRetries = 2;
+  static int debugMaxAutoRetries = 4;
+
+  /// 传输停滞判定：超过该时间无新字节则强制切线续传。
+  @visibleForTesting
+  static Duration debugStallTimeout = const Duration(seconds: 20);
+
+  /// 是否在下载前对候选做短探测排序。测试可关闭以固定顺序。
+  @visibleForTesting
+  static bool debugProbeCandidates = true;
 
   /// 测试钩子：替换候选 URL 构建逻辑（默认 [buildDownloadUrlCandidates]）。
   @visibleForTesting
@@ -616,10 +673,14 @@ class AppUpdateDownloadTask {
   Completer<void>? _runCompleter;
   int _autoRetryLeft = 0;
   DateTime? _lastNotifyAt;
+  Timer? _stallTimer;
+  bool _stallHandling = false;
   /// 上次成功建立传输的候选索引；中断续传时优先从此索引起，避免反复卡在慢直连。
   int _preferredCandidateIndex = 0;
   /// 当前正在传输的候选索引（传输失败时可切下一镜像续传）。
   int _activeCandidateIndex = 0;
+  /// 竞速后的候选列表缓存（同一次下载任务内复用）。
+  List<String>? _orderedCandidates;
 
   AppUpdateDownloadState get state => progressNotifier.value.state;
 
@@ -665,6 +726,11 @@ class AppUpdateDownloadTask {
     }
     _startInFlight = true;
     _autoRetryLeft = debugMaxAutoRetries;
+    // 显式重新开始时刷新候选（避免同 URL 复用任务时沿用上次测速/失败顺序）
+    _orderedCandidates = null;
+    _preferredCandidateIndex = 0;
+    _stallHandling = false;
+    _stopStallWatchdog();
     try {
       await _startInner(resumePreferred: state == AppUpdateDownloadState.error);
     } finally {
@@ -716,10 +782,10 @@ class AppUpdateDownloadTask {
     }
     _emit(
       AppUpdateDownloadState.downloading,
-      message: _resumeFromPartial ? '正在断点续传…' : null,
+      message: _resumeFromPartial ? '正在断点续传…' : '正在选择最快下载源…',
     );
 
-    final candidates = debugBuildUrlCandidates(url);
+    final candidates = await _resolveCandidates();
     Object? lastError;
     var sawConnectionError = false;
 
@@ -750,10 +816,15 @@ class AppUpdateDownloadTask {
           AppUpdateDownloadState.downloading,
           message: isMirror ? '正在通过加速源续传…' : '正在直连 GitHub 续传…',
         );
+      } else if (i == start && !_resumeFromPartial) {
+        _emit(
+          AppUpdateDownloadState.downloading,
+          message: isMirror ? '正在通过加速源下载…' : '正在直连 GitHub 下载…',
+        );
       }
 
       _activeCandidateIndex = i;
-      final ok = await _tryCandidate(
+      final settled = await _tryCandidate(
         candidateUri,
         onConnectionError: (e) {
           sawConnectionError = true;
@@ -763,14 +834,19 @@ class AppUpdateDownloadTask {
           lastError = e;
         },
       );
-      if (ok) {
-        _preferredCandidateIndex = i;
+      if (settled) {
+        // 仅在真正下完时锁定该候选；失败/停滞时保留
+        // _handleTransferFailure 已推进的 _preferredCandidateIndex。
+        if (state == AppUpdateDownloadState.completed) {
+          _preferredCandidateIndex = i;
+        }
         return;
       }
       if (_cancelled) return;
     }
 
     if (!_cancelled) {
+      _stopStallWatchdog();
       _emit(
         AppUpdateDownloadState.error,
         message: _allCandidatesFailedMessage(lastError, sawConnectionError),
@@ -780,6 +856,24 @@ class AppUpdateDownloadTask {
       }
     }
     _finishRun();
+  }
+
+  Future<List<String>> _resolveCandidates() async {
+    if (_orderedCandidates != null) return _orderedCandidates!;
+    final built = debugBuildUrlCandidates(url);
+    if (!debugProbeCandidates || built.length <= 1) {
+      _orderedCandidates = built;
+      return built;
+    }
+    try {
+      _orderedCandidates = await probeAndOrderDownloadCandidates(
+        built,
+        timeout: debugConnectTimeout,
+      );
+    } catch (_) {
+      _orderedCandidates = built;
+    }
+    return _orderedCandidates!;
   }
 
   /// 尝试单个候选；成功开始传输并等待结束后返回 true；可继续下一候选返回 false。
@@ -867,6 +961,8 @@ class AppUpdateDownloadTask {
     );
     _lastTickAt = DateTime.now();
     _lastTickBytes = _downloaded;
+    _stallHandling = false;
+    _armStallWatchdog();
 
     final run = Completer<void>();
     _runCompleter = run;
@@ -878,6 +974,52 @@ class AppUpdateDownloadTask {
     );
     await run.future;
     return true;
+  }
+
+  void _armStallWatchdog() {
+    _stallTimer?.cancel();
+    // 周期取停滞阈值的一半，短超时（测试）也能及时触发
+    final ms = debugStallTimeout.inMilliseconds;
+    final periodMs = ms <= 0 ? 5000 : (ms ~/ 2).clamp(200, 5000);
+    _stallTimer = Timer.periodic(Duration(milliseconds: periodMs), (_) {
+      if (_cancelled || _stallHandling) return;
+      if (state != AppUpdateDownloadState.downloading) return;
+      final last = _lastTickAt;
+      if (last == null) return;
+      if (DateTime.now().difference(last) < debugStallTimeout) return;
+      _stallHandling = true;
+      unawaited(_forceStallReconnect());
+    });
+  }
+
+  void _stopStallWatchdog() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+  }
+
+  /// 传输假死（连接仍在但长时间无数据）：主动断开并走自动续传。
+  Future<void> _forceStallReconnect() async {
+    try {
+      final sub = _sub;
+      _sub = null;
+      // 先强关连接，避免 hung stream 的 cancel 一直等不到
+      _closeClient(force: true);
+      if (sub != null) {
+        try {
+          await sub.cancel().timeout(const Duration(milliseconds: 800));
+        } catch (_) {}
+      }
+      await _closeSink();
+      if (!_cancelled) {
+        // 停滞时即便尚未写入字节也要换线重试（否则会卡死在假连接）
+        _handleTransferFailure(
+          '下载停滞，正在切换线路续传…',
+          requirePartial: false,
+        );
+      }
+    } finally {
+      _finishRun();
+    }
   }
 
   String _allCandidatesFailedMessage(Object? lastError, bool sawConnectionError) {
@@ -907,9 +1049,10 @@ class AppUpdateDownloadTask {
   }
 
   Future<void> _onDone() async {
+    _stopStallWatchdog();
     await _closeSink();
     _closeClient();
-    if (!_cancelled) {
+    if (!_cancelled && !_stallHandling) {
       final total = _total;
       if (total != null && total > 0 && _downloaded < total) {
         _handleTransferFailure('下载中断，文件不完整，请重试');
@@ -930,9 +1073,10 @@ class AppUpdateDownloadTask {
   }
 
   Future<void> _onError(Object e) async {
+    _stopStallWatchdog();
     await _closeSink();
     _closeClient(force: true);
-    if (!_cancelled) {
+    if (!_cancelled && !_stallHandling) {
       _handleTransferFailure(_friendlyError(e));
     }
     _finishRun();
@@ -940,21 +1084,32 @@ class AppUpdateDownloadTask {
 
   /// 传输中断：保留半成品；若仍有自动重试额度则静默 Range 续传。
   /// 连续失败时推进首选候选索引，避免永远卡在慢直连。
+  /// [requirePartial] 为 false 时允许 0 字节也重试（用于连接假死/停滞）。
   /// 返回 true 表示已安排自动续传（调用方仍应 `_finishRun` 结束当前流）。
-  bool _handleTransferFailure(String message) {
-    if (_autoRetryLeft > 0 && !_cancelled && _file != null && _downloaded > 0) {
+  bool _handleTransferFailure(
+    String message, {
+    bool requirePartial = true,
+  }) {
+    final hasProgress = _downloaded > 0;
+    if (_autoRetryLeft > 0 &&
+        !_cancelled &&
+        _file != null &&
+        (hasProgress || !requirePartial)) {
       _autoRetryLeft--;
-      _resumeFromPartial = true;
+      _resumeFromPartial = hasProgress;
       // 当前候选传输失败：下次从下一候选开始（含镜像）
       _preferredCandidateIndex = _activeCandidateIndex + 1;
       _emit(
         AppUpdateDownloadState.downloading,
-        message: '连接中断，正在切换线路续传（剩 $_autoRetryLeft 次）…',
+        message: hasProgress
+            ? '连接中断，正在切换线路续传（剩 $_autoRetryLeft 次）…'
+            : '下载停滞，正在切换线路重试（剩 $_autoRetryLeft 次）…',
       );
       unawaited(_autoResumeAfterFailure());
       return true;
     }
     _emit(AppUpdateDownloadState.error, message: message);
+    _stopStallWatchdog();
     if (!debugDisableKeepAlive) {
       unawaited(AppUpdateDownloadKeepAlive.instance.end(clearNotification: false));
     }
@@ -973,6 +1128,7 @@ class AppUpdateDownloadTask {
       await Future<void>.delayed(const Duration(milliseconds: 50));
       if (_cancelled) return;
     }
+    _stallHandling = false;
     _startInFlight = true;
     try {
       await _startInner(resumePreferred: true);
@@ -991,6 +1147,7 @@ class AppUpdateDownloadTask {
   /// 暂停：挂起响应流订阅（TCP 背压，真暂停，不断开连接）。
   void pause() {
     if (state != AppUpdateDownloadState.downloading) return;
+    _stopStallWatchdog();
     _sub?.pause();
     _emit(AppUpdateDownloadState.paused);
   }
@@ -1001,6 +1158,8 @@ class AppUpdateDownloadTask {
     final sub = _sub;
     if (sub != null) {
       _emit(AppUpdateDownloadState.downloading);
+      _lastTickAt = DateTime.now();
+      _armStallWatchdog();
       try {
         sub.resume();
         return;
@@ -1029,24 +1188,29 @@ class AppUpdateDownloadTask {
     }
     _cancelled = true;
     _autoRetryLeft = 0;
-    final sub = _sub;
-    _sub = null;
-    if (sub != null) {
-      try {
-        sub.resume(); // 若处于暂停态，先恢复以便 cancel 立即生效
-        await sub.cancel();
-      } catch (_) {}
-    }
-    _closeClient(force: true);
-    await _closeSink();
-    if (deletePartial) await _deleteFileQuietly();
-    _downloaded = 0;
-    _total = null;
+    _stallHandling = true;
+    _stopStallWatchdog();
+    // 尽早切到 cancelled，避免连接关闭回调先 _finishRun 导致调用方看到 downloading
     progressNotifier.value =
         const AppUpdateDownloadProgress(state: AppUpdateDownloadState.cancelled);
     if (!debugDisableKeepAlive) {
       unawaited(AppUpdateDownloadKeepAlive.instance.end());
     }
+    final sub = _sub;
+    _sub = null;
+    // 先强关连接，避免 hung TCP 导致 cancel 卡住
+    _closeClient(force: true);
+    if (sub != null) {
+      try {
+        sub.resume(); // 若处于暂停态，先恢复以便 cancel 立即生效
+        await sub.cancel().timeout(const Duration(milliseconds: 800));
+      } catch (_) {}
+    }
+    await _closeSink();
+    if (deletePartial) await _deleteFileQuietly();
+    _downloaded = 0;
+    _total = null;
+    _orderedCandidates = null;
     _finishRun();
   }
 

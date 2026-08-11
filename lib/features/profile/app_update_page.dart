@@ -2,8 +2,10 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app/frosted_background.dart';
+import 'services/app_update_download_keepalive.dart';
 import 'services/app_update_service.dart';
 
 /// 版本更新说明与安装入口
@@ -22,6 +24,8 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
   AppUpdateDownloadTask? _task;
   bool _installing = false;
 
+  static const _kBatteryOptPromptKey = 'hibi_update_battery_opt_prompted';
+
   @override
   void initState() {
     super.initState();
@@ -36,6 +40,42 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
   String _fmtSpeed(int? bps) {
     if (bps == null || bps <= 0) return '';
     return '${_fmtBytes(bps)}/s';
+  }
+
+  /// 首次 Android 下载前引导关闭电池优化（对齐主流自更新实践，降低息屏断流）。
+  Future<void> _maybePromptBatteryOptimization() async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    final ignoring =
+        await AppUpdateDownloadKeepAlive.instance.isIgnoringBatteryOptimizations();
+    if (ignoring) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_kBatteryOptPromptKey) == true) return;
+    if (!mounted) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('保持后台下载'),
+        content: const Text(
+          '为避免锁屏或熄屏后下载中断，建议允许「希比」忽略电池优化。'
+          '可在系统设置中随时改回。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('暂不'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('去设置'),
+          ),
+        ],
+      ),
+    );
+    await prefs.setBool(_kBatteryOptPromptKey, true);
+    if (go == true) {
+      await AppUpdateDownloadKeepAlive.instance
+          .requestIgnoreBatteryOptimizations();
+    }
   }
 
   Future<void> _install(String? filePath) async {
@@ -81,6 +121,7 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
       } else if (st.state == AppUpdateDownloadState.downloading) {
         // 下载中，无需重复触发
       } else {
+        await _maybePromptBatteryOptimization();
         await task.start();
       }
     } catch (e) {
@@ -223,6 +264,22 @@ class _AppUpdatePageState extends State<AppUpdatePage> {
                                     fontWeight: FontWeight.w600,
                                   ),
                                 ),
+                                if (!kIsWeb &&
+                                    Platform.isAndroid &&
+                                    (state == AppUpdateDownloadState.idle ||
+                                        state == AppUpdateDownloadState.downloading ||
+                                        state == AppUpdateDownloadState.paused)) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    state == AppUpdateDownloadState.downloading ||
+                                            state == AppUpdateDownloadState.paused
+                                        ? '已启用后台下载，锁屏或熄屏也会继续；请保留通知栏进度提示。'
+                                        : '开始后可锁屏或切换应用，下载会在后台继续。',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: cs.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 10),
                                 TweenAnimationBuilder<double>(
                                   tween: Tween<double>(

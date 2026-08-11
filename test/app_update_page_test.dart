@@ -97,6 +97,7 @@ void main() {
     HttpOverrides.global = null;
     AppUpdateDownloadTask.debugDisableKeepAlive = true;
     AppUpdateDownloadTask.debugMaxAutoRetries = 0;
+    AppUpdateDownloadTask.debugProbeCandidates = false;
   });
 
   late Directory tempDir;
@@ -106,6 +107,7 @@ void main() {
     PathProviderPlatform.instance = _FakePathProviderPlatform(tempDir.path);
     AppUpdateDownloadTask.debugDisableKeepAlive = true;
     AppUpdateDownloadTask.debugMaxAutoRetries = 0;
+    AppUpdateDownloadTask.debugProbeCandidates = false;
   });
 
   tearDown(() async {

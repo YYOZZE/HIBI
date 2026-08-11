@@ -71,6 +71,7 @@ void main() {
     HttpOverrides.global = null;
     AppUpdateDownloadTask.debugDisableKeepAlive = true;
     AppUpdateDownloadTask.debugMaxAutoRetries = 0;
+    AppUpdateDownloadTask.debugProbeCandidates = false;
   });
 
   late Directory tempDir;
@@ -80,6 +81,10 @@ void main() {
     PathProviderPlatform.instance = _FakePathProviderPlatform(tempDir.path);
     AppUpdateDownloadTask.debugDisableKeepAlive = true;
     AppUpdateDownloadTask.debugMaxAutoRetries = 0;
+    AppUpdateDownloadTask.debugProbeCandidates = false;
+    AppUpdateDownloadTask.debugStallTimeout = const Duration(seconds: 20);
+    AppUpdateDownloadTask.debugBuildUrlCandidates = buildDownloadUrlCandidates;
+    AppUpdateService.instance.debugClearActiveDownloadTask();
   });
 
   tearDown(() async {
@@ -260,6 +265,111 @@ void main() {
       expect(buildDownloadUrlCandidates('https://GITHUB.com/x/y'),
           isNot(['https://GITHUB.com/x/y'])); // host 大小写不敏感
       expect(buildDownloadUrlCandidates('not-a-url'), ['not-a-url']);
+    });
+
+    test('探测排序：快源排前，不可达源垫底', () async {
+      final server = _SlowDownloadServer._();
+      final goodUrl = await server.start();
+      final bad = await _deadUrl();
+      try {
+        final ordered = await probeAndOrderDownloadCandidates(
+          [bad, goodUrl.toString()],
+          timeout: const Duration(seconds: 2),
+        );
+        expect(ordered.first, goodUrl.toString());
+        expect(ordered.last, bad);
+      } finally {
+        await server.dispose();
+      }
+    });
+  });
+
+  group('传输停滞自动切线', () {
+    tearDown(() {
+      AppUpdateDownloadTask.debugBuildUrlCandidates =
+          buildDownloadUrlCandidates;
+      AppUpdateDownloadTask.debugStallTimeout = const Duration(seconds: 20);
+      AppUpdateDownloadTask.debugMaxAutoRetries = 0;
+    });
+
+    test('长时间无字节时自动切换候选并续传完成', () async {
+      // 第一源发足量数据后挂起；第二源支持 Range 续传剩余
+      HttpServer? stallServer;
+      HttpServer? goodServer;
+      final payload = List<int>.filled(512 * 1024, 7);
+      const firstWave = 256 * 1024;
+      stallServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      stallServer.listen((req) async {
+        final resp = req.response;
+        resp.statusCode = HttpStatus.ok;
+        resp.headers.set(HttpHeaders.contentLengthHeader, payload.length);
+        // 分多片 flush，确保客户端 listen 能收到字节
+        var sent = 0;
+        while (sent < firstWave) {
+          final n = (sent + 32 * 1024 <= firstWave) ? 32 * 1024 : firstWave - sent;
+          resp.add(payload.sublist(sent, sent + n));
+          await resp.flush();
+          sent += n;
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+        // 故意不关闭、不再发数据 → 触发停滞检测
+        await Future<void>.delayed(const Duration(seconds: 30));
+        try {
+          await resp.close();
+        } catch (_) {}
+      });
+      goodServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      goodServer.listen((req) async {
+        var start = 0;
+        final range = req.headers.value(HttpHeaders.rangeHeader);
+        if (range != null) {
+          final m = RegExp(r'bytes=(\d+)-').firstMatch(range);
+          if (m != null) start = int.parse(m.group(1)!);
+        }
+        final resp = req.response;
+        if (start > 0) {
+          resp.statusCode = HttpStatus.partialContent;
+          resp.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-${payload.length - 1}/${payload.length}',
+          );
+        }
+        resp.headers
+            .set(HttpHeaders.contentLengthHeader, payload.length - start);
+        resp.add(payload.sublist(start));
+        await resp.close();
+      });
+      final stallUrl =
+          'http://127.0.0.1:${stallServer.port}/stall.exe';
+      final goodUrl = 'http://127.0.0.1:${goodServer.port}/good.exe';
+      AppUpdateDownloadTask.debugBuildUrlCandidates =
+          (_) => [stallUrl, goodUrl];
+      AppUpdateDownloadTask.debugStallTimeout = const Duration(seconds: 2);
+      AppUpdateDownloadTask.debugMaxAutoRetries = 2;
+      final task =
+          AppUpdateService.instance.createDownloadTask('http://x/stall-test.exe');
+      try {
+        final started = task.start();
+        await _waitFor(
+          () => task.progressNotifier.value.downloadedBytes >= firstWave ~/ 2,
+          timeout: const Duration(seconds: 10),
+        );
+        await _waitFor(
+          () =>
+              task.state == AppUpdateDownloadState.completed ||
+              task.state == AppUpdateDownloadState.error,
+          timeout: const Duration(seconds: 25),
+        );
+        await started;
+        final p = task.progressNotifier.value;
+        expect(p.state, AppUpdateDownloadState.completed,
+            reason: '停滞切线后应完成，实际 ${p.state}（${p.message}）');
+        expect(p.downloadedBytes, payload.length);
+      } finally {
+        await task.cancel();
+        await stallServer.close(force: true);
+        await goodServer.close(force: true);
+      }
     });
   });
 
