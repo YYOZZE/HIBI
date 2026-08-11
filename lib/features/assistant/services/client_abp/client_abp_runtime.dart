@@ -146,15 +146,18 @@ class ClientAbpRuntime {
     List<Map<String, String>>? history,
     String? currentMindNodeId,
     List<Map<String, dynamic>>? attachments,
+    String? systemExtra,
   }) async {
     await ensureLoaded();
 
     final tools = clientAbpTools();
-    final system = clientAbpSystemPrompt(
+    final baseSystem = clientAbpSystemPrompt(
       agentName: agent.name,
       agentRole: agent.role,
       currentMindNodeId: currentMindNodeId,
     );
+    final extra = systemExtra?.trim() ?? '';
+    final system = extra.isEmpty ? baseSystem : '$baseSystem\n\n$extra';
     debugPrint('[CLIENT-ABP] tools=${tools.length} msgLen=${userMessage.length}');
 
     return _api.chatWithTools(

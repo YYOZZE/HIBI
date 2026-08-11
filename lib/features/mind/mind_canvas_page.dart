@@ -1171,12 +1171,12 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
   }
 
   /// 选中方块：仅右下角一个缩放手柄（宽高同调）。
-  /// 可视按钮贴在方框角上；周围大热区内按下即拖拽缩放（不触发方块拖动）。
+  /// 可视角标与命中区一致：角标显示范围内任意点按下即可拖拽缩放。
   List<Widget> _buildBlockResizeHandles(CanvasBlock block) {
-    // 屏幕约 26px 可视 / 约 112px 热区（随画布缩放换算）
-    final grip = 26.0 / _scale;
-    final hit = 112.0 / _scale;
-    final strokeWidth = 2.0 / _scale;
+    // 折中偏大：原 26 / 过小 14 → 约 22px；命中与可视同大，避免点不中
+    final grip = 22.0 / _scale;
+    final hit = 22.0 / _scale;
+    final strokeWidth = 1.8 / _scale;
     final colorScheme = Theme.of(context).colorScheme;
     // 中心落在方框右下角：按钮贴角，不外飘
     final cx = block.x + block.width;
@@ -1199,10 +1199,12 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
               onPanUpdate: (d) => _onResizeUpdate(block, d),
               onPanEnd: (_) => _onResizeEnd(),
               onPanCancel: _onResizeEnd,
+              // 整块命中区可拖；角标绘制填满中心，不再 IgnorePointer 造成命中空洞
               child: Center(
-                child: IgnorePointer(
+                child: SizedBox(
+                  width: grip,
+                  height: grip,
                   child: CustomPaint(
-                    size: Size(grip, grip),
                     painter: _ResizeGripPainter(
                       color: colorScheme.primary,
                       lineColor: colorScheme.onPrimary,
@@ -1972,10 +1974,20 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                     }),
                                     // 4. 方块（最上）：点击即拖，保证优先命中、即时拖动
                                     ..._items.whereType<CanvasBlock>().map((block) {
+                                      final isSelected = _selectedId == block.id;
+                                      final editingThis = isSelected &&
+                                          (_blockEditorKeyForId == block.id) &&
+                                          (_blockEditorKey?.currentState
+                                                  ?.isTextEditingActive ??
+                                              false);
+                                      // 仅选中且非编辑/非缩放时可拖：避免未选中误拖、编辑选字时整框乱跑
+                                      final canDragBlock = isSelected &&
+                                          !editingThis &&
+                                          _resizingBlockId == null;
                                       Widget blockWidget() => _BlockWidget(
-                                        key: _selectedId == block.id ? _editorKeyFor(block.id) : null,
+                                        key: isSelected ? _editorKeyFor(block.id) : null,
                                         block: block,
-                                        selected: _selectedId == block.id,
+                                        selected: isSelected,
                                         resizing: _resizingBlockId == block.id,
                                         onTap: () {
                                           if (_tool == 'trash') _deleteItem(block.id);
@@ -1985,6 +1997,9 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                           _blockColorPickerExpandedForId = null;
                                         });
                                         },
+                                        onEditingActiveChanged: () {
+                                          if (mounted) setState(() {});
+                                        },
                                         onUpdate: (b) {
                                           _markUserInteracting();
                                           final i = _items.indexWhere((e) => e.id == b.id);
@@ -1992,6 +2007,7 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                         },
                                       );
                                       void onDragUpdate(DragUpdateDetails details) {
+                                        if (!canDragBlock) return;
                                         _markUserInteracting();
                                         final viewportBox = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
                                         if (viewportBox != null && viewportBox.hasSize) {
@@ -2025,14 +2041,12 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                           _resizingBlockId == block.id;
                                       final draggable = Draggable<String>(
                                         data: block.id,
-                                        // 缩放中禁止拖动方块，避免与角手柄抢手势
-                                        maxSimultaneousDrags:
-                                            (_resizingBlockId != null) ? 0 : 1,
+                                        maxSimultaneousDrags: canDragBlock ? 1 : 0,
                                         feedback: const SizedBox.shrink(),
                                         dragAnchorStrategy: pointerDragAnchorStrategy,
                                         childWhenDragging: blockWidget(),
                                         onDragStarted: () {
-                                          if (_resizingBlockId != null) return;
+                                          if (!canDragBlock) return;
                                           _markUserInteracting();
                                           _draggingBlockId = block.id;
                                         },
@@ -2043,7 +2057,7 @@ class _MindCanvasPageState extends State<MindCanvasPage> {
                                         child: Listener(
                                           behavior: HitTestBehavior.translucent,
                                           onPointerDown: (e) {
-                                            if (_resizingBlockId != null) return;
+                                            if (!canDragBlock) return;
                                             _markUserInteracting();
                                             _blockDragPointerOffset[block.id] =
                                                 e.localPosition;
@@ -2735,6 +2749,7 @@ class _BlockWidget extends StatefulWidget {
     required this.selected,
     required this.onTap,
     required this.onUpdate,
+    this.onEditingActiveChanged,
     this.resizing = false,
   });
 
@@ -2742,6 +2757,8 @@ class _BlockWidget extends StatefulWidget {
   final bool selected;
   final VoidCallback onTap;
   final void Function(CanvasBlock) onUpdate;
+  /// 编辑态开/关时通知父级（用于禁用方块拖拽，避免选字时整框移动）
+  final VoidCallback? onEditingActiveChanged;
   /// 正在手动拉伸：暂停按内容自动增高，避免与用户拖拽打架
   final bool resizing;
 
@@ -2752,6 +2769,7 @@ class _BlockWidget extends StatefulWidget {
 class _BlockWidgetState extends State<_BlockWidget> {
   late TextEditingController _controller;
   final FocusNode _focusNode = FocusNode();
+  final ScrollController _contentScrollController = ScrollController();
   /// 预览态点击后强制进入编辑（等焦点真正挂上后再恢复）
   bool _forceEdit = false;
 
@@ -2766,6 +2784,7 @@ class _BlockWidgetState extends State<_BlockWidget> {
     // 焦点真正到手后才解除强制编辑态：避免「先恢复预览、焦点尚未挂上」的竞态把方块弹回预览
     if (_focusNode.hasFocus && _forceEdit) _forceEdit = false;
     if (mounted) setState(() {});
+    widget.onEditingActiveChanged?.call();
     // 失焦回到预览态时，若渲染内容比方块高则自动增高一档
     if (!_focusNode.hasFocus) _growToFitPreview();
   }
@@ -2776,7 +2795,10 @@ class _BlockWidgetState extends State<_BlockWidget> {
   /// 预览态进入编辑：先强制切出预览，焦点确认后再恢复标志；两帧内仍未聚焦则回退预览
   void _enterEditMode() {
     if (_focusNode.hasFocus) return;
-    if (!_forceEdit) setState(() => _forceEdit = true);
+    if (!_forceEdit) {
+      setState(() => _forceEdit = true);
+      widget.onEditingActiveChanged?.call();
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _focusNode.requestFocus();
@@ -2784,9 +2806,44 @@ class _BlockWidgetState extends State<_BlockWidget> {
         // 兜底：焦点始终未挂上（极端时序）时解除强制标志，避免卡在非预览非编辑的中间态
         if (mounted && !_focusNode.hasFocus && _forceEdit) {
           setState(() => _forceEdit = false);
+          widget.onEditingActiveChanged?.call();
         }
       });
     });
+  }
+
+  /// 吸收文字区域滚轮，避免误滚动；仅右侧滚动条拖拽可改变偏移
+  void _absorbPointerScroll(PointerSignalEvent event) {
+    if (event is PointerScrollEvent) {
+      GestureBinding.instance.pointerSignalResolver.register(event, (_) {});
+    }
+  }
+
+  /// 方块正文：外层滚动 + 右侧滚动条；内容区禁滚轮与鼠标拖拽滚动
+  Widget _buildScrollableBody({
+    required double viewportHeight,
+    required Widget child,
+  }) {
+    return ScrollConfiguration(
+      behavior: const _BlockScrollbarOnlyBehavior(),
+      child: Scrollbar(
+        controller: _contentScrollController,
+        thumbVisibility: true,
+        trackVisibility: widget.selected,
+        interactive: true,
+        child: SingleChildScrollView(
+          controller: _contentScrollController,
+          physics: const ClampingScrollPhysics(),
+          child: Listener(
+            onPointerSignal: _absorbPointerScroll,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: viewportHeight),
+              child: child,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// 编辑态切换无序列表（加点）：对当前行/选中行行首加或去「• 」前缀
@@ -2844,6 +2901,7 @@ class _BlockWidgetState extends State<_BlockWidget> {
     _focusNode.removeListener(_onFocusChange);
     _focusNode.dispose();
     _controller.dispose();
+    _contentScrollController.dispose();
     super.dispose();
   }
 
@@ -2959,18 +3017,16 @@ class _BlockWidgetState extends State<_BlockWidget> {
               decoration: BoxDecoration(
                 color: blockBgColor,
                 borderRadius: BorderRadius.circular(6),
-                // 边框取色：设置了颜色标注/文字颜色时用该颜色（highlight > textColor），
-                // 让颜色区分在方块轮廓上一眼可辨；未设置时回退主题 outline 派生色
-                // （以主题 outline 为底混入少量 onSurface，亮/暗主题下都清晰可见）
+                // 加厚描边 + 浅色轮廓，让方框在深色画布上清晰可见
                 border: Border.all(
                   color: widget.selected
                       ? (borderAccent ?? colorScheme.primary)
                       : (borderAccent ??
                           Color.alphaBlend(
-                            colorScheme.onSurface.withOpacity(0.18),
-                            colorScheme.outline,
+                            Colors.white.withOpacity(0.38),
+                            colorScheme.outline.withOpacity(0.65),
                           )),
-                  width: widget.selected ? 2.5 : 1.5,
+                  width: widget.selected ? 3.0 : 2.25,
                 ),
               ),
               child: Padding(
@@ -3005,43 +3061,52 @@ class _BlockWidgetState extends State<_BlockWidget> {
                             // 已选中再次点击：进入编辑（焦点确认前保持强制编辑态，避免弹回预览）
                             _enterEditMode();
                           },
-                          child: SingleChildScrollView(
-                            physics: const ClampingScrollPhysics(),
-                            child: BlockContentPreview(
-                              text: block.text,
-                              maxWidth: contentWidth,
-                              baseStyle: textStyle,
-                              completed: block.completed,
-                              textAlign: blockTextAlign,
+                          child: _buildScrollableBody(
+                            viewportHeight: block.height - 16,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: BlockContentPreview(
+                                text: block.text,
+                                maxWidth: contentWidth,
+                                baseStyle: textStyle,
+                                completed: block.completed,
+                                textAlign: blockTextAlign,
+                              ),
                             ),
                           ),
                         )
-                      : TextField(
-                    controller: _controller,
-                    focusNode: _focusNode,
-                    cursorColor: colorScheme.primary,
-                    onChanged: (v) {
-                      block.text = v;
-                      _updateBlockHeight(block, v, textStyle, contentWidth);
-                      widget.onUpdate(block);
-                    },
-                    decoration: InputDecoration(
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      errorBorder: InputBorder.none,
-                      disabledBorder: InputBorder.none,
-                      isDense: true,
-                      filled: false,
-                      contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                      hintText: _focusNode.hasFocus ? null : '记录文字…',
-                      hintStyle: TextStyle(color: colorScheme.onSurfaceVariant.withOpacity(0.65)),
-                    ),
-                    maxLines: null,
-                    style: textStyle,
-                    textAlign: blockTextAlign,
-                    textAlignVertical: TextAlignVertical.center,
-                  ),
+                      : _buildScrollableBody(
+                          viewportHeight: block.height - 16,
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextField(
+                              controller: _controller,
+                              focusNode: _focusNode,
+                              cursorColor: colorScheme.primary,
+                              onChanged: (v) {
+                                block.text = v;
+                                _updateBlockHeight(block, v, textStyle, contentWidth);
+                                widget.onUpdate(block);
+                              },
+                              decoration: InputDecoration(
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                errorBorder: InputBorder.none,
+                                disabledBorder: InputBorder.none,
+                                isDense: true,
+                                filled: false,
+                                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                hintText: _focusNode.hasFocus ? null : '记录文字…',
+                                hintStyle: TextStyle(color: colorScheme.onSurfaceVariant.withOpacity(0.65)),
+                              ),
+                              maxLines: null,
+                              style: textStyle,
+                              textAlign: blockTextAlign,
+                              textAlignVertical: TextAlignVertical.center,
+                            ),
+                          ),
+                        ),
                 ),
                     ],
                   ),
@@ -3215,6 +3280,14 @@ class _ColumnWidget extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 方块正文滚动：禁止在文字上用鼠标拖拽滚动，仅保留滚动条交互。
+class _BlockScrollbarOnlyBehavior extends MaterialScrollBehavior {
+  const _BlockScrollbarOnlyBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const <PointerDeviceKind>{};
 }
 
 /// 右下角缩放手柄可视：圆角小方块 + ⌟ 角标。

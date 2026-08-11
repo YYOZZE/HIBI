@@ -18,6 +18,7 @@ import 'agent_config_page.dart';
 import 'privacy_terms_page.dart';
 import 'services/app_update_service.dart';
 import '../lan_sync/lan_sync_page.dart';
+import '../assistant/services/generated_content_save_path.dart';
 import '../transfer/transfer_file_actions.dart';
 import '../transfer/transfer_save_path.dart';
 
@@ -34,16 +35,23 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   String? _transferSavePath;
+  String? _generatedSavePath;
 
   @override
   void initState() {
     super.initState();
     _loadTransferSavePath();
+    _loadGeneratedSavePath();
   }
 
   Future<void> _loadTransferSavePath() async {
     final path = await TransferSavePath.getPath();
     if (mounted) setState(() => _transferSavePath = path);
+  }
+
+  Future<void> _loadGeneratedSavePath() async {
+    final path = await GeneratedContentSavePath.getPath();
+    if (mounted) setState(() => _generatedSavePath = path);
   }
 
   Future<void> _pickTransferSavePath() async {
@@ -58,12 +66,34 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _pickGeneratedSavePath() async {
+    final dir = await FilePicker.platform.getDirectoryPath();
+    if (dir == null || !mounted) return;
+    await GeneratedContentSavePath.setPath(dir);
+    setState(() => _generatedSavePath = dir);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已设置智能体生成物路径：$dir')),
+      );
+    }
+  }
+
   Future<void> _resetTransferSavePath() async {
     await TransferSavePath.setPath(null);
     if (mounted) {
       setState(() => _transferSavePath = null);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已恢复为默认保存路径')),
+      );
+    }
+  }
+
+  Future<void> _resetGeneratedSavePath() async {
+    await GeneratedContentSavePath.setPath(null);
+    if (mounted) {
+      setState(() => _generatedSavePath = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已恢复智能体生成物默认路径')),
       );
     }
   }
@@ -179,6 +209,27 @@ class _SettingsPageState extends State<SettingsPage> {
                       subtitle: '使用应用文档目录下的 HIBI_Received',
                       onTap: () async {
                         await _resetTransferSavePath();
+                      },
+                    ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.auto_awesome_outlined,
+                      title: '智能体生成物 · 默认存储路径',
+                      subtitle: _generatedSavePath != null &&
+                              _generatedSavePath!.isNotEmpty
+                          ? _generatedSavePath!
+                          : '默认：应用文档目录 / HIBI_Generated',
+                      onTap: () async {
+                        await _pickGeneratedSavePath();
+                      },
+                    ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.restart_alt_outlined,
+                      title: '恢复生成物默认路径',
+                      subtitle: '使用应用文档目录下的 HIBI_Generated',
+                      onTap: () async {
+                        await _resetGeneratedSavePath();
                       },
                     ),
                     Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),

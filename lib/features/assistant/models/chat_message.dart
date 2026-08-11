@@ -6,6 +6,9 @@ class ChatMessageAttachment {
     required this.mime,
     required this.kind,
     this.path,
+    this.previewText,
+    this.generated = false,
+    this.generatedLabel,
   });
 
   final String id;
@@ -15,9 +18,16 @@ class ChatMessageAttachment {
   final String kind;
   /// 本地可打开路径（持久化副本或原始选择路径）
   final String? path;
+  /// 文档类缩略预览（前几行纯文本）
+  final String? previewText;
+  /// 是否为智能体生成并落盘的文件
+  final bool generated;
+  /// 生成物标签，如「文档」「视频脚本」
+  final String? generatedLabel;
 
   bool get isImage => kind == 'image';
   bool get isVideo => kind == 'video';
+  bool get isDoc => kind == 'textDoc' || kind == 'binaryDoc';
   bool get canOpen {
     final p = path?.trim() ?? '';
     return p.isNotEmpty;
@@ -29,6 +39,11 @@ class ChatMessageAttachment {
         'mime': mime,
         'kind': kind,
         if (path != null && path!.isNotEmpty) 'path': path,
+        if (previewText != null && previewText!.trim().isNotEmpty)
+          'preview_text': previewText,
+        if (generated) 'generated': true,
+        if (generatedLabel != null && generatedLabel!.trim().isNotEmpty)
+          'generated_label': generatedLabel,
       };
 
   static ChatMessageAttachment fromJson(Map<String, dynamic> json) {
@@ -38,6 +53,10 @@ class ChatMessageAttachment {
       mime: (json['mime'] ?? 'application/octet-stream').toString(),
       kind: (json['kind'] ?? 'unsupported').toString(),
       path: (json['path'] as String?)?.trim(),
+      previewText: (json['preview_text'] ?? json['previewText'])?.toString(),
+      generated: json['generated'] == true,
+      generatedLabel:
+          (json['generated_label'] ?? json['generatedLabel'])?.toString(),
     );
   }
 }

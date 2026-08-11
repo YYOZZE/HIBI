@@ -18,6 +18,7 @@ import '../auth/services/user_sync_scheduler.dart';
 import 'models/agent.dart';
 import 'models/chat_attachment.dart';
 import 'models/chat_message.dart';
+import 'models/composer_tool_mode.dart';
 import 'models/hibi_assistant.dart';
 import 'models/mind_topic_ref.dart';
 import 'services/assistant_api.dart';
@@ -26,6 +27,7 @@ import 'services/asr_service.dart';
 import 'services/asr_stream_service.dart';
 import 'services/chat_attachment_picker.dart';
 import 'services/chat_session_service.dart';
+import 'services/generated_content_save_path.dart';
 
 /// 单个智能体的文字对话页（一体式输入条 + 消息气泡）
 /// 长按气泡：复制 / 删除本条 / 进入多选；多选模式下可批量删除
@@ -99,6 +101,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
 
   MindTopicRef? _topicRef;
   final List<ChatAttachment> _pendingAttachments = [];
+  ComposerToolMode _toolMode = ComposerToolMode.none;
 
   @override
   void initState() {
@@ -524,6 +527,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     if (text.isEmpty && attachments.isEmpty) return;
 
     // 思考中也可入队；Session 按时间顺序处理
+    final mode = _toolMode;
     await _session.send(
       agent: widget.agent,
       repository: widget.repository,
@@ -531,7 +535,11 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       userText: text,
       topicRef: _topicRef,
       attachments: attachments,
+      toolMode: mode,
     );
+    if (mounted && mode != ComposerToolMode.none) {
+      setState(() => _toolMode = ComposerToolMode.none);
+    }
   }
 
   void _interruptThinking() {
@@ -542,6 +550,53 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
           content: Text('当前没有可打断的请求'),
           duration: Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _showMoreComposerTools() async {
+    final colorScheme = Theme.of(context).colorScheme;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: colorScheme.surfaceContainerHigh,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.folder_special_outlined),
+              title: const Text('生成物保存位置'),
+              subtitle: const Text('查看或修改默认存储路径'),
+              onTap: () => Navigator.pop(ctx, 'storage'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.clear_all_rounded),
+              title: const Text('取消当前工具模式'),
+              onTap: () => Navigator.pop(ctx, 'clear'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'clear') {
+      setState(() => _toolMode = ComposerToolMode.none);
+      return;
+    }
+    if (choice == 'storage') {
+      final path = await GeneratedContentSavePath.defaultPathLabel();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('当前生成物目录：$path\n可在「设置」中修改默认存储路径'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
         ),
       );
     }
@@ -1342,6 +1397,9 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                   hasPendingAttachments: _pendingAttachments.isNotEmpty,
                   onSend: _send,
                   onAttach: _showAttachMenu,
+                  toolMode: _toolMode,
+                  onToolModeChanged: (m) => setState(() => _toolMode = m),
+                  onMoreTools: _showMoreComposerTools,
                   voiceInputMode: _voiceInputMode,
                   asrConfigured: _asrConfigured,
                   isDesktop: _isDesktop,
@@ -1591,7 +1649,22 @@ Future<void> _openLocalPath(
 }) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   final p = path?.trim() ?? '';
+  final lower = (name ?? p).toLowerCase();
+  final isTextDoc = lower.endsWith('.md') ||
+      lower.endsWith('.txt') ||
+      lower.endsWith('.markdown') ||
+      (mime ?? '').startsWith('text/');
+
   if (p.isNotEmpty && await File(p).exists()) {
+    // Markdown / 文本：优先应用内预览（更接近豆包文档体验）
+    if (isTextDoc && context.mounted) {
+      await _showTextDocPreviewDialog(
+        context,
+        path: p,
+        title: name ?? '文档',
+      );
+      return;
+    }
     final result = await OpenFilex.open(p);
     if (result.type == ResultType.done) return;
     if (isImage && context.mounted) {
@@ -1626,6 +1699,76 @@ Future<void> _openLocalPath(
       content: Text('文件已不可用（可能已被清理）'),
       behavior: SnackBarBehavior.floating,
     ),
+  );
+}
+
+Future<void> _showTextDocPreviewDialog(
+  BuildContext context, {
+  required String path,
+  required String title,
+}) async {
+  String body;
+  try {
+    body = await File(path).readAsString();
+  } catch (_) {
+    body = '无法读取文档内容';
+  }
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) {
+      final theme = Theme.of(ctx);
+      final cs = theme.colorScheme;
+      return Dialog(
+        insetPadding: const EdgeInsets.all(16),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: 720,
+            maxHeight: MediaQuery.of(ctx).size.height * 0.82,
+          ),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 4, 8),
+                child: Row(
+                  children: [
+                    Icon(Icons.description_outlined, color: cs.primary, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '用系统应用打开',
+                      onPressed: () => OpenFilex.open(path),
+                      icon: const Icon(Icons.open_in_new_rounded, size: 20),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: cs.outline.withOpacity(0.2)),
+              Expanded(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+                  child: SelectableText(
+                    body,
+                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.5),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    },
   );
 }
 
@@ -1692,6 +1835,9 @@ class _ChatInputBar extends StatelessWidget {
     required this.hasPendingAttachments,
     required this.onSend,
     this.onAttach,
+    required this.toolMode,
+    required this.onToolModeChanged,
+    this.onMoreTools,
     required this.voiceInputMode,
     required this.asrConfigured,
     required this.isDesktop,
@@ -1715,6 +1861,9 @@ class _ChatInputBar extends StatelessWidget {
   final bool hasPendingAttachments;
   final VoidCallback onSend;
   final VoidCallback? onAttach;
+  final ComposerToolMode toolMode;
+  final ValueChanged<ComposerToolMode> onToolModeChanged;
+  final VoidCallback? onMoreTools;
   final bool voiceInputMode;
   final bool asrConfigured;
   final bool isDesktop;
@@ -1742,52 +1891,221 @@ class _ChatInputBar extends StatelessWidget {
     final ext = theme.extension<HibiThemeExtension>();
     final astral = ext?.themeId == AppThemeId.astralPhantasm;
     final isDark = theme.brightness == Brightness.dark;
+    // 悬浮椭圆输入壳：与聊天背景分离的唯一表面，不再叠加底板色块
     final shellFill = isDark
         ? Color.alphaBlend(
-            Colors.white.withOpacity(0.10),
+            Colors.white.withOpacity(0.12),
             colorScheme.surfaceContainerHighest,
           )
         : Color.alphaBlend(
-            Colors.white.withOpacity(0.92),
+            Colors.white.withOpacity(0.94),
             colorScheme.surface,
           );
 
     return Material(
-      color: colorScheme.surface.withOpacity(isDark ? 0.92 : 0.96),
+      color: Colors.transparent,
       elevation: 0,
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-        decoration: BoxDecoration(
-          border: Border(
-            top: BorderSide(color: colorScheme.outline.withOpacity(0.28)),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: shellFill,
+                  borderRadius: BorderRadius.circular(astral ? 24 : _shellRadius),
+                  border: Border.all(
+                    color: isRecording
+                        ? colorScheme.primary.withOpacity(0.7)
+                        : colorScheme.outline.withOpacity(isDark ? 0.38 : 0.28),
+                    width: isRecording ? 1.4 : 1.0,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(isDark ? 0.32 : 0.07),
+                      blurRadius: 18,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+                  child: voiceInputMode
+                      ? _buildVoiceInput(context, theme, colorScheme)
+                      : _buildTextInput(context, theme, colorScheme),
+                ),
+              ),
+              if (!voiceInputMode) ...[
+                const SizedBox(height: 8),
+                _buildToolStrip(context, theme, colorScheme),
+              ],
+            ],
           ),
         ),
-        child: SafeArea(
-          top: false,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: shellFill,
-              borderRadius: BorderRadius.circular(astral ? 24 : _shellRadius),
-              border: Border.all(
-                color: isRecording
-                    ? colorScheme.primary.withOpacity(0.7)
-                    : colorScheme.outline.withOpacity(isDark ? 0.45 : 0.35),
-                width: isRecording ? 1.4 : 1.1,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(isDark ? 0.28 : 0.06),
-                  blurRadius: 16,
-                  offset: const Offset(0, 3),
+      ),
+    );
+  }
+
+  Widget _buildToolStrip(
+    BuildContext context,
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) {
+    void toggle(ComposerToolMode mode) {
+      onToolModeChanged(toolMode == mode ? ComposerToolMode.none : mode);
+    }
+
+    return ListenableBuilder(
+      listenable: inputController,
+      builder: (context, _) {
+        final canSend = inputController.text.trim().isNotEmpty ||
+            hasPendingAttachments;
+
+        return Center(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _toolCircle(
+                  icon: Icons.add_rounded,
+                  tooltip: loading ? '添加附件（将排队发送）' : '添加附件',
+                  onPressed: onAttach,
+                  colorScheme: colorScheme,
+                ),
+                const SizedBox(width: 6),
+                _toolChip(
+                  theme: theme,
+                  colorScheme: colorScheme,
+                  icon: Icons.edit_note_rounded,
+                  label: '帮我写作',
+                  selected: toolMode == ComposerToolMode.writeDoc,
+                  onTap: () => toggle(ComposerToolMode.writeDoc),
+                ),
+                const SizedBox(width: 6),
+                _toolChip(
+                  theme: theme,
+                  colorScheme: colorScheme,
+                  icon: Icons.image_outlined,
+                  label: '图像生成',
+                  selected: toolMode == ComposerToolMode.imageGen,
+                  onTap: () => toggle(ComposerToolMode.imageGen),
+                ),
+                const SizedBox(width: 6),
+                _toolChip(
+                  theme: theme,
+                  colorScheme: colorScheme,
+                  icon: Icons.movie_creation_outlined,
+                  label: '视频生成',
+                  selected: toolMode == ComposerToolMode.videoGen,
+                  onTap: () => toggle(ComposerToolMode.videoGen),
+                ),
+                const SizedBox(width: 6),
+                _toolChip(
+                  theme: theme,
+                  colorScheme: colorScheme,
+                  icon: Icons.apps_rounded,
+                  label: '更多',
+                  selected: false,
+                  onTap: onMoreTools,
+                ),
+                const SizedBox(width: 10),
+                Container(
+                  width: 1,
+                  height: 22,
+                  color: colorScheme.outline.withOpacity(0.28),
+                ),
+                const SizedBox(width: 10),
+                _toolCircle(
+                  icon: Icons.mic_rounded,
+                  tooltip: asrConfigured
+                      ? '语音输入（按住说话）'
+                      : '语音输入（请先在智能体配置中填写 ASR）',
+                  onPressed: onToggleVoice,
+                  colorScheme: colorScheme,
+                ),
+                const SizedBox(width: 6),
+                _primaryAction(
+                  icon: Icons.arrow_upward_rounded,
+                  tooltip: loading ? '排队发送' : '发送',
+                  onPressed: canSend ? onSend : null,
+                  colorScheme: colorScheme,
+                  emphasized: canSend,
                 ),
               ],
             ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(6, 5, 6, 5),
-              child: voiceInputMode
-                  ? _buildVoiceInput(context, theme, colorScheme)
-                  : _buildTextInput(context, theme, colorScheme),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _toolCircle({
+    required IconData icon,
+    required String tooltip,
+    VoidCallback? onPressed,
+    required ColorScheme colorScheme,
+  }) {
+    final enabled = onPressed != null;
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: colorScheme.onSurface.withOpacity(enabled ? 0.08 : 0.04),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(12),
+          child: SizedBox(
+            width: 36,
+            height: 36,
+            child: Icon(
+              icon,
+              size: 20,
+              color: colorScheme.onSurface.withOpacity(enabled ? 0.9 : 0.35),
             ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolChip({
+    required ThemeData theme,
+    required ColorScheme colorScheme,
+    required IconData icon,
+    required String label,
+    required bool selected,
+    VoidCallback? onTap,
+  }) {
+    final bg = selected
+        ? colorScheme.primary.withOpacity(0.18)
+        : colorScheme.onSurface.withOpacity(0.07);
+    final fg = selected
+        ? colorScheme.primary
+        : colorScheme.onSurface.withOpacity(0.88);
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 16, color: fg),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: fg,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -1917,74 +2235,40 @@ class _ChatInputBar extends StatelessWidget {
     return ListenableBuilder(
       listenable: inputController,
       builder: (context, _) {
-        final hasText = inputController.text.trim().isNotEmpty;
-        // 思考中仍可发送，消息进入队列
-        final canSend = hasText || hasPendingAttachments;
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            _ghostIcon(
-              icon: Icons.add_rounded,
-              tooltip: loading ? '添加附件（将排队发送）' : '添加附件',
-              onPressed: onAttach,
-              colorScheme: colorScheme,
+        final canSend = inputController.text.trim().isNotEmpty ||
+            hasPendingAttachments;
+        return ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 40),
+          child: TextField(
+            controller: inputController,
+            maxLines: 5,
+            minLines: 1,
+            textAlignVertical: TextAlignVertical.center,
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurface,
+              height: 1.35,
             ),
-            const SizedBox(width: 4),
-            Expanded(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 38),
-                child: TextField(
-                  controller: inputController,
-                  maxLines: 5,
-                  minLines: 1,
-                  textAlignVertical: TextAlignVertical.center,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    color: colorScheme.onSurface,
-                    height: 1.35,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: '发消息或点右侧麦克风…',
-                    hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                      color: colorScheme.onSurfaceVariant.withOpacity(0.62),
-                    ),
-                    isDense: true,
-                    filled: false,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    errorBorder: InputBorder.none,
-                    disabledBorder: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 10,
-                    ),
-                  ),
-                  onSubmitted: (_) {
-                    if (canSend) onSend();
-                  },
-                ),
+            decoration: InputDecoration(
+              hintText: toolMode.hint,
+              hintStyle: theme.textTheme.bodyMedium?.copyWith(
+                color: colorScheme.onSurfaceVariant.withOpacity(0.62),
+              ),
+              isDense: true,
+              filled: false,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              errorBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 6,
+                vertical: 10,
               ),
             ),
-            const SizedBox(width: 4),
-            _primaryAction(
-              icon: Icons.mic_rounded,
-              tooltip: asrConfigured
-                  ? '语音输入（按住说话）'
-                  : '语音输入（请先在智能体配置中填写 ASR）',
-              onPressed: onToggleVoice,
-              colorScheme: colorScheme,
-              emphasized: false,
-            ),
-            const SizedBox(width: 6),
-            _primaryAction(
-              icon: Icons.arrow_upward_rounded,
-              tooltip: loading ? '排队发送' : '发送',
-              onPressed: canSend ? onSend : null,
-              colorScheme: colorScheme,
-              emphasized: canSend,
-            ),
-          ],
+            onSubmitted: (_) {
+              if (canSend) onSend();
+            },
+          ),
         );
       },
     );
@@ -2053,6 +2337,7 @@ class _MessageBubble extends StatelessWidget {
                   _MessageAttachmentTile(
                     attachment: a,
                     isUser: isUser,
+                    createdAt: message.timestamp,
                     onOpen: () => _openLocalPath(
                       context,
                       a.path,
@@ -2174,11 +2459,13 @@ class _MessageAttachmentTile extends StatelessWidget {
     required this.attachment,
     required this.isUser,
     required this.onOpen,
+    this.createdAt,
   });
 
   final ChatMessageAttachment attachment;
   final bool isUser;
   final VoidCallback onOpen;
+  final DateTime? createdAt;
 
   @override
   Widget build(BuildContext context) {
@@ -2188,6 +2475,17 @@ class _MessageAttachmentTile extends StatelessWidget {
     final muted = fg.withOpacity(0.8);
     final path = attachment.path?.trim() ?? '';
     final hasFile = path.isNotEmpty && File(path).existsSync();
+
+    // 生成文档：豆包风格横向卡片（标题 + 时间 + 右侧正文缩略）
+    if (attachment.isDoc && (attachment.generated || attachment.previewText != null)) {
+      return _GeneratedDocCard(
+        attachment: attachment,
+        isUser: isUser,
+        createdAt: createdAt,
+        onOpen: onOpen,
+        hasFile: hasFile,
+      );
+    }
 
     Widget thumb;
     if (attachment.isImage && hasFile) {
@@ -2207,9 +2505,7 @@ class _MessageAttachmentTile extends StatelessWidget {
     } else {
       IconData icon = Icons.insert_drive_file_outlined;
       if (attachment.isVideo) icon = Icons.videocam_outlined;
-      if (attachment.kind == 'textDoc' || attachment.kind == 'binaryDoc') {
-        icon = Icons.description_outlined;
-      }
+      if (attachment.isDoc) icon = Icons.description_outlined;
       if (attachment.isImage) icon = Icons.image_outlined;
       thumb = _filePlaceholder(icon: icon, fg: muted, wide: true);
     }
@@ -2272,6 +2568,149 @@ class _MessageAttachmentTile extends StatelessWidget {
       height: wide ? 72 : 56,
       alignment: Alignment.center,
       child: Icon(icon, size: 28, color: fg),
+    );
+  }
+}
+
+/// 聊天内「生成文档」预览卡（参考豆包布局，配色跟 App ColorScheme）
+class _GeneratedDocCard extends StatelessWidget {
+  const _GeneratedDocCard({
+    required this.attachment,
+    required this.isUser,
+    required this.onOpen,
+    required this.hasFile,
+    this.createdAt,
+  });
+
+  final ChatMessageAttachment attachment;
+  final bool isUser;
+  final VoidCallback onOpen;
+  final bool hasFile;
+  final DateTime? createdAt;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final fg = isUser ? cs.onPrimary : cs.onSurface;
+    final muted = fg.withOpacity(0.72);
+    final title = attachment.name.replaceAll(RegExp(r'\.md$', caseSensitive: false), '');
+    final time = createdAt ?? DateTime.now();
+    final timeLabel =
+        '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    final preview = (attachment.previewText ?? '').trim();
+    final label = attachment.generatedLabel?.trim().isNotEmpty == true
+        ? attachment.generatedLabel!
+        : '文档';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          width: 320,
+          decoration: BoxDecoration(
+            color: fg.withOpacity(0.07),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: fg.withOpacity(0.14)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.description_rounded, size: 18, color: cs.primary),
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
+                            decoration: BoxDecoration(
+                              color: cs.primary.withOpacity(0.14),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              label,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: cs.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: fg,
+                          fontWeight: FontWeight.w600,
+                          height: 1.25,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '创建时间：$timeLabel',
+                        style: theme.textTheme.labelSmall?.copyWith(color: muted),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Icon(
+                            hasFile
+                                ? Icons.open_in_new_rounded
+                                : Icons.link_off_rounded,
+                            size: 14,
+                            color: muted,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            hasFile ? '点击预览 / 打开' : '文件不可用',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: muted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Container(
+                  width: 88,
+                  height: 112,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: cs.surface.withOpacity(isUser ? 0.2 : 0.55),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: fg.withOpacity(0.12)),
+                  ),
+                  child: Text(
+                    preview.isEmpty ? '（无预览）' : preview,
+                    maxLines: 7,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: muted,
+                      height: 1.25,
+                      fontSize: 9.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

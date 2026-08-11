@@ -148,8 +148,72 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
     }
   }
 
-  void _selectProvider(AgentProviderId? id) {
+  Future<void> _selectProvider(AgentProviderId? id) async {
     setState(() => _selected = id);
+    // 单选立即持久化，避免「点了选用但未点保存」导致对话仍走旧配置
+    await AgentConfigService.setSelectedProviderId(id);
+    if (!mounted) return;
+    if (id != null) {
+      final key = _editors[id]?.savedApiKey ?? '';
+      final typed = _editors[id]?.keyController.text.trim() ?? '';
+      final hasKey = key.isNotEmpty ||
+          (typed.isNotEmpty && typed != _ProviderEditors.maskedPlaceholder);
+      if (!hasKey) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已选用 ${id.displayName}，请填写 API Key 后点「保存」才会真正生效'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _toggleKeyVisibility(_ProviderEditors ed) {
+    setState(() {
+      if (ed.obscureKey) {
+        // 显示明文：占位符换成真实已存 Key
+        if (ed.keyController.text == _ProviderEditors.maskedPlaceholder &&
+            ed.savedApiKey.isNotEmpty) {
+          ed.keyController.text = ed.savedApiKey;
+          ed.keyController.selection = TextSelection.collapsed(
+            offset: ed.keyController.text.length,
+          );
+          ed.keyEditing = true;
+        }
+        ed.obscureKey = false;
+      } else {
+        // 隐藏：若内容仍是已存 Key 且未改，恢复占位符
+        if (ed.savedApiKey.isNotEmpty &&
+            ed.keyController.text.trim() == ed.savedApiKey) {
+          ed.keyController.text = _ProviderEditors.maskedPlaceholder;
+          ed.keyEditing = false;
+        }
+        ed.obscureKey = true;
+      }
+    });
+  }
+
+  void _toggleAsrTokenVisibility() {
+    setState(() {
+      if (_asrTokenObscure) {
+        if (_asrTokenController.text == _masked && _asrSavedToken.isNotEmpty) {
+          _asrTokenController.text = _asrSavedToken;
+          _asrTokenController.selection = TextSelection.collapsed(
+            offset: _asrTokenController.text.length,
+          );
+          _asrTokenEditing = true;
+        }
+        _asrTokenObscure = false;
+      } else {
+        if (_asrSavedToken.isNotEmpty &&
+            _asrTokenController.text.trim() == _asrSavedToken) {
+          _asrTokenController.text = _masked;
+          _asrTokenEditing = false;
+        }
+        _asrTokenObscure = true;
+      }
+    });
   }
 
   @override
@@ -290,10 +354,11 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
           ),
           const SizedBox(height: 6),
           Text(
-            '· 文本对话：选择火山/OpenAI 兼容后可用\n'
+            '· 文本对话：选择火山/OpenAI 兼容后即时生效（改 Key/URL 仍需点保存）\n'
+            '· 帮我写作 / 视频脚本：聊天底栏开启后，生成物会落盘并可在气泡内预览\n'
             '· Skills（日程/思维导图）：需登录且后端在线，由希比助手调用\n'
             '· 语音输入：在下方配置豆包 ASR 并启用；App 直连火山识别\n'
-            '· 附件：对话气泡可预览并点击打开本地文件',
+            '· 生成物默认目录：设置 → 智能体生成物 · 默认存储路径',
             style: theme.textTheme.bodySmall?.copyWith(
               color: colorScheme.onSurfaceVariant,
               height: 1.45,
@@ -404,8 +469,7 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
               fillColor: AppGlassStyles.inputFill(context),
               suffixIcon: IconButton(
                 tooltip: _asrTokenObscure ? '显示' : '隐藏',
-                onPressed: () =>
-                    setState(() => _asrTokenObscure = !_asrTokenObscure),
+                onPressed: _toggleAsrTokenVisibility,
                 icon: Icon(
                   _asrTokenObscure
                       ? Icons.visibility_outlined
@@ -558,7 +622,7 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
               fillColor: AppGlassStyles.inputFill(context),
               suffixIcon: IconButton(
                 tooltip: ed.obscureKey ? '显示' : '隐藏',
-                onPressed: () => setState(() => ed.obscureKey = !ed.obscureKey),
+                onPressed: () => _toggleKeyVisibility(ed),
                 icon: Icon(
                   ed.obscureKey
                       ? Icons.visibility_outlined

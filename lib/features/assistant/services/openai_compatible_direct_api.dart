@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -288,6 +289,87 @@ class OpenAiCompatibleDirectApi {
       return userMessage;
     }
     return content;
+  }
+
+  /// Moonshot/Kimi 等仅提供 Chat Completions，无 `/images/generations`。
+  static bool likelySupportsImagesGenerations(String baseUrl) {
+    final u = normalizeBaseUrl(baseUrl).toLowerCase();
+    if (u.isEmpty) return false;
+    if (u.contains('moonshot') || u.contains('kimi.ai') || u.contains('kimi.com')) {
+      return false;
+    }
+    return true;
+  }
+
+  /// OpenAI 兼容文生图：`POST {base}/images/generations`。
+  /// 成功返回 PNG/JPEG 字节；提供商不支持时抛错由上层回退。
+  Future<Uint8List> generateImage({
+    required String apiKey,
+    required String baseUrl,
+    required String prompt,
+    String? model,
+    String size = '1024x1024',
+  }) async {
+    final base = normalizeBaseUrl(baseUrl);
+    if (base.isEmpty) throw Exception('Base URL 为空');
+    final key = normalizeApiKey(apiKey);
+    if (key.isEmpty) throw Exception('API Key 为空');
+    final url = Uri.parse('$base/images/generations');
+    final body = <String, dynamic>{
+      'prompt': prompt.trim(),
+      'n': 1,
+      'size': size,
+      'response_format': 'b64_json',
+    };
+    final mid = normalizeModelId(model ?? '');
+    if (mid.isNotEmpty) body['model'] = mid;
+
+    final res = await _client
+        .post(
+          url,
+          headers: {
+            'Authorization': 'Bearer $key',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 120));
+
+    if (res.statusCode != 200) {
+      String detail = res.body;
+      try {
+        final data = jsonDecode(res.body);
+        if (data is Map) {
+          final err = data['error'];
+          if (err is Map) {
+            detail = (err['message'] ?? err['code'] ?? detail).toString();
+          }
+        }
+      } catch (_) {}
+      throw Exception(
+        '图像接口错误 ${res.statusCode}: ${_friendlyModelHttpError(res.statusCode, detail)}',
+      );
+    }
+
+    final data = jsonDecode(res.body);
+    if (data is! Map) throw Exception('无效图像响应');
+    final list = data['data'];
+    if (list is! List || list.isEmpty) throw Exception('图像接口无返回');
+    final first = list.first;
+    if (first is! Map) throw Exception('无效图像条目');
+    final b64 = (first['b64_json'] ?? '').toString();
+    if (b64.isNotEmpty) {
+      return base64Decode(b64);
+    }
+    final imageUrl = (first['url'] ?? '').toString();
+    if (imageUrl.isEmpty) throw Exception('图像接口未返回数据');
+    final imgRes = await _client
+        .get(Uri.parse(imageUrl))
+        .timeout(const Duration(seconds: 90));
+    if (imgRes.statusCode != 200 || imgRes.bodyBytes.isEmpty) {
+      throw Exception('下载生成图像失败 ${imgRes.statusCode}');
+    }
+    return imgRes.bodyBytes;
   }
 
   /// 去掉尾部 `/chat/completions`，统一无末尾斜杠

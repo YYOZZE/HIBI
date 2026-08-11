@@ -11,11 +11,14 @@ import '../../profile/services/agent_config_service.dart';
 import '../models/agent.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
+import '../models/composer_tool_mode.dart';
 import '../models/hibi_assistant.dart';
 import '../models/mind_topic_ref.dart';
 import 'assistant_api.dart';
 import 'assistant_repository.dart';
 import 'client_abp/client_abp_runtime.dart';
+import 'generated_content_save_path.dart';
+import 'generated_document_service.dart';
 import 'openai_compatible_direct_api.dart';
 
 class _QueuedSend {
@@ -25,8 +28,10 @@ class _QueuedSend {
     required this.api,
     required this.userMsgId,
     required this.promptText,
+    required this.rawUserText,
     required this.mindNodeId,
     required this.attachments,
+    this.toolMode = ComposerToolMode.none,
   });
 
   final Agent agent;
@@ -34,8 +39,11 @@ class _QueuedSend {
   final AssistantApi api;
   final String userMsgId;
   final String promptText;
+  /// 用户原始输入（图像生成等场景用）
+  final String rawUserText;
   final String? mindNodeId;
   final List<ChatAttachment> attachments;
+  final ComposerToolMode toolMode;
 }
 
 /// 按 agentId 托管进行中的发送任务与消息队列：
@@ -105,6 +113,7 @@ class ChatSessionService {
     required String userText,
     MindTopicRef? topicRef,
     List<ChatAttachment> attachments = const [],
+    ComposerToolMode toolMode = ComposerToolMode.none,
   }) async {
     final agentId = agent.id;
     final trimmed = userText.trim();
@@ -152,7 +161,13 @@ class ChatSessionService {
       );
     }
     if (trimmed.isNotEmpty) {
-      promptBuf.writeln(trimmed);
+      if (toolMode == ComposerToolMode.none) {
+        promptBuf.writeln(trimmed);
+      } else {
+        promptBuf.writeln(
+          GeneratedDocumentService.userPrefixFor(toolMode, trimmed),
+        );
+      }
     }
     final promptText = promptBuf.toString().trim();
     if (promptText.isEmpty && sendableAtt.every((a) => !a.isImage)) {
@@ -182,8 +197,10 @@ class ChatSessionService {
       api: api,
       userMsgId: userMsg.id,
       promptText: promptText.isEmpty ? trimmed : promptText,
+      rawUserText: trimmed,
       mindNodeId: topicRef?.projectId ?? agent.mindNodeId,
       attachments: sendableAtt,
+      toolMode: toolMode,
     );
     final q = _queues.putIfAbsent(agentId, () => <_QueuedSend>[]);
     q.add(item);
@@ -260,6 +277,8 @@ class ChatSessionService {
         mindNodeId: item.mindNodeId,
         customModel: customModel,
         attachments: attPayload,
+        toolMode: item.toolMode,
+        rawUserText: item.rawUserText,
       );
 
       Object? replyOrError;
@@ -291,11 +310,15 @@ class ChatSessionService {
           cancelWaiter.isCompleted) {
         await _writeCancelled(item.repository, agentId);
         // 后台请求仍可能完成，结果丢弃
-        unawaited(replyFuture.catchError((_) => ''));
+        unawaited(
+          replyFuture.catchError(
+            (_) => const _AssistantReply(content: ''),
+          ),
+        );
         return;
       }
 
-      final reply = replyOrError as String;
+      final packed = replyOrError as _AssistantReply;
       // 端侧 ABP 已写本地日程；若仍走后端 tools，则 pull 合并云端结果。
       if (useBackend && !HibiAssistant.isBuiltInId(agentId)) {
         await UserSyncScheduler.pullAfterAssistantToolUse();
@@ -310,7 +333,11 @@ class ChatSessionService {
 
       await item.repository.addMessage(
         agentId,
-        ChatMessage(role: 'assistant', content: reply),
+        ChatMessage(
+          role: 'assistant',
+          content: packed.content,
+          attachments: packed.attachments,
+        ),
       );
       _bump(agentId);
     } catch (e) {
@@ -341,7 +368,7 @@ class ChatSessionService {
     _bump(agentId);
   }
 
-  Future<String> _requestReply({
+  Future<_AssistantReply> _requestReply({
     required AssistantApi api,
     required Agent agent,
     required String text,
@@ -351,7 +378,67 @@ class ChatSessionService {
     required String? mindNodeId,
     required AgentProviderConfig? customModel,
     required List<Map<String, dynamic>> attachments,
+    required ComposerToolMode toolMode,
+    required String rawUserText,
   }) async {
+    // 图像：仅当提供商可能支持 /images/generations 时尝试直出图。
+    // Kimi/Moonshot 等只有 Chat，会走下方「图像提示词文档」路径（可跑通）。
+    if (toolMode == ComposerToolMode.imageGen &&
+        customModel != null &&
+        customModel.hasApiKey &&
+        OpenAiCompatibleDirectApi.likelySupportsImagesGenerations(
+          customModel.effectiveBaseUrl,
+        )) {
+      try {
+        final bytes = await OpenAiCompatibleDirectApi().generateImage(
+          apiKey: customModel.effectiveApiKey,
+          baseUrl: customModel.effectiveBaseUrl,
+          prompt: rawUserText,
+          model: customModel.effectiveModel,
+        );
+        final att = await _saveGeneratedImage(bytes, rawUserText);
+        if (att != null) {
+          return _AssistantReply(
+            content: '已生成图像并保存到本地，可点击预览或打开文件。',
+            attachments: [att],
+          );
+        }
+      } catch (e) {
+        debugPrint('images/generations 不可用，回退图像提示词文档: $e');
+      }
+    }
+
+    final modeExtra = GeneratedDocumentService.systemExtraFor(toolMode);
+
+    Future<_AssistantReply> afterText(String reply) async {
+      if (toolMode == ComposerToolMode.writeDoc ||
+          toolMode == ComposerToolMode.videoGen ||
+          toolMode == ComposerToolMode.imageGen) {
+        final packed = await GeneratedDocumentService.materializeFromReply(
+          reply,
+          mode: toolMode,
+        );
+        var content = packed.content;
+        if (toolMode == ComposerToolMode.imageGen &&
+            packed.attachments.isNotEmpty) {
+          content =
+              '$content\n\n说明：当前模型（如 Kimi）通常不提供文生图像素接口；'
+              '已将可复用提示词保存为本地文档。若接入支持 /images/generations 的提供商，可直接出图。';
+        }
+        if (toolMode == ComposerToolMode.videoGen &&
+            packed.attachments.isNotEmpty) {
+          content =
+              '$content\n\n说明：当前按「分镜/脚本文档」交付（Kimi 等对话模型可完整跑通）；'
+              '真视频渲染需另行接入视频生成 API。';
+        }
+        return _AssistantReply(
+          content: content,
+          attachments: packed.attachments,
+        );
+      }
+      return _AssistantReply(content: reply);
+    }
+
     // 希比助手：端侧直连模型 + 本地 tools，不依赖后端执行工具。
     if (HibiAssistant.isBuiltInId(agent.id)) {
       if (customModel == null || !customModel.hasApiKey) {
@@ -359,14 +446,16 @@ class ChatSessionService {
           '希比助手在 App 端侧运行。请先在「设置 → 智能体配置」填写并选中火山/OpenAI 兼容 API Key。',
         );
       }
-      return ClientAbpRuntime().chat(
+      final reply = await ClientAbpRuntime().chat(
         agent: agent,
         model: customModel,
         userMessage: text,
         history: history,
         currentMindNodeId: mindNodeId,
         attachments: attachments,
+        systemExtra: modeExtra,
       );
+      return afterText(reply);
     }
 
     Future<String> direct() {
@@ -374,7 +463,8 @@ class ChatSessionService {
       final system = [
         if (agent.name.trim().isNotEmpty) '你是「${agent.name.trim()}」。',
         if (agent.role.trim().isNotEmpty) agent.role.trim(),
-      ].join();
+        if (modeExtra.isNotEmpty) modeExtra,
+      ].where((s) => s.trim().isNotEmpty).join('\n');
       return OpenAiCompatibleDirectApi().chat(
         apiKey: cfg.effectiveApiKey,
         baseUrl: cfg.effectiveBaseUrl,
@@ -386,43 +476,89 @@ class ChatSessionService {
       );
     }
 
+    String rawReply;
     if (!useBackend) {
-      if (customModel != null) return direct();
-      return api.sendMessage(
-        agentId: agent.id,
-        userMessage: text,
-        history: history,
-        agentName: agent.name,
-        agentRole: agent.role,
-        useBackendSystemPrompt: false,
-        currentMindNodeId: mindNodeId,
-        token: token,
-        attachments: attachments,
-      );
+      if (customModel != null) {
+        rawReply = await direct();
+      } else {
+        rawReply = await api.sendMessage(
+          agentId: agent.id,
+          userMessage: text,
+          history: history,
+          agentName: agent.name,
+          agentRole: agent.role,
+          useBackendSystemPrompt: false,
+          currentMindNodeId: mindNodeId,
+          token: token,
+          attachments: attachments,
+        );
+      }
+    } else {
+      try {
+        // 工具模式需要客户端侧落盘文档：有自定义模型时直连更可控
+        if (toolMode != ComposerToolMode.none && customModel != null) {
+          rawReply = await direct();
+        } else {
+          rawReply = await api.sendMessage(
+            agentId: agent.id,
+            userMessage: text,
+            history: history,
+            agentName: agent.name,
+            agentRole: agent.role,
+            useBackendSystemPrompt: true,
+            currentMindNodeId: mindNodeId,
+            token: token,
+            modelApiKey: customModel?.effectiveApiKey,
+            modelBaseUrl: customModel?.effectiveBaseUrl,
+            modelId: customModel?.effectiveModel,
+            attachments: attachments,
+          );
+        }
+      } catch (e) {
+        if (customModel != null &&
+            OpenAiCompatibleDirectApi.isBackendNetworkFailure(e)) {
+          debugPrint('后端不可达，改用客户端直连模型: $e');
+          rawReply = await direct();
+        } else {
+          rethrow;
+        }
+      }
     }
+    return afterText(rawReply);
+  }
 
+  Future<ChatMessageAttachment?> _saveGeneratedImage(
+    Uint8List bytes,
+    String prompt,
+  ) async {
     try {
-      return await api.sendMessage(
-        agentId: agent.id,
-        userMessage: text,
-        history: history,
-        agentName: agent.name,
-        agentRole: agent.role,
-        useBackendSystemPrompt: true,
-        currentMindNodeId: mindNodeId,
-        token: token,
-        modelApiKey: customModel?.effectiveApiKey,
-        modelBaseUrl: customModel?.effectiveBaseUrl,
-        modelId: customModel?.effectiveModel,
-        attachments: attachments,
+      final dir = await GeneratedContentSavePath.getSaveDirectory();
+      final stamp = DateTime.now();
+      final name =
+          'image_${stamp.year}${stamp.month.toString().padLeft(2, '0')}'
+          '${stamp.day.toString().padLeft(2, '0')}_'
+          '${stamp.hour.toString().padLeft(2, '0')}'
+          '${stamp.minute.toString().padLeft(2, '0')}'
+          '${stamp.second.toString().padLeft(2, '0')}.png';
+      final file = File('${dir.path}${Platform.pathSeparator}$name');
+      await file.writeAsBytes(bytes, flush: true);
+      final label = prompt.trim().isEmpty
+          ? '生成图像'
+          : (prompt.trim().length > 24
+              ? '${prompt.trim().substring(0, 24)}…'
+              : prompt.trim());
+      return ChatMessageAttachment(
+        id: 'img_${stamp.microsecondsSinceEpoch}',
+        name: '$label.png',
+        mime: 'image/png',
+        kind: 'image',
+        path: file.path,
+        generated: true,
+        generatedLabel: '图像',
       );
     } catch (e) {
-      if (customModel != null &&
-          OpenAiCompatibleDirectApi.isBackendNetworkFailure(e)) {
-        debugPrint('后端不可达，改用客户端直连模型: $e');
-        return await direct();
-      }
-      rethrow;
+      debugPrint('save generated image failed: $e');
+      return null;
     }
   }
 
@@ -517,3 +653,13 @@ class ChatSessionService {
 }
 
 class _CancelSentinel {}
+
+class _AssistantReply {
+  const _AssistantReply({
+    required this.content,
+    this.attachments = const [],
+  });
+
+  final String content;
+  final List<ChatMessageAttachment> attachments;
+}

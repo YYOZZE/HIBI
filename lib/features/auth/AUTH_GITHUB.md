@@ -1,5 +1,7 @@
 # GitHub 登录与 Star 门禁（无自建后端）
 
+> **本地账户目录 / 旧数据合并 SOP**：[`本地账户数据结构说明.md`](../../../本地账户数据结构说明.md)
+
 > **V4.0.1 起默认绕过本门禁**（打开即进主壳、助理开放；LAN 账号校验一并暂关）。  
 > 功能细节、复现与复开指南见封存笔记：[`AUTH_GITHUB_SEALED.md`](./AUTH_GITHUB_SEALED.md)。  
 > 总开关：`lib/config/auth_gate_config.dart` → `bypassGitHubLoginGate`。
