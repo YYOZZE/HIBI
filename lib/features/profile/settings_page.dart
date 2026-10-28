@@ -15,6 +15,7 @@ import '../auth/services/auth_repository.dart';
 import '../auth/services/local_account_import_service.dart';
 import 'about_version_page.dart';
 import 'agent_config_page.dart';
+import 'colleague_api_page.dart';
 import 'privacy_terms_page.dart';
 import 'services/app_update_service.dart';
 import '../lan_sync/lan_sync_page.dart';
@@ -271,6 +272,19 @@ class _SettingsPageState extends State<SettingsPage> {
                         Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (_) => const AgentConfigPage(),
+                          ),
+                        );
+                      },
+                    ),
+                    Divider(height: 1, color: colorScheme.outline.withOpacity(0.3)),
+                    _SettingsTile(
+                      icon: Icons.groups_outlined,
+                      title: '同事接口',
+                      subtitle: '管家、秘书、女仆各自的本地模型或 API。换接口不清除对话',
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const ColleagueApiPage(),
                           ),
                         );
                       },

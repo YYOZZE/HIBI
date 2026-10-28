@@ -75,6 +75,23 @@ List<Map<String, dynamic>> clientAbpTools() => [
         },
         'required': ['block_id', 'start_time', 'end_time'],
       }),
+      _fn(
+        'create_group_chat',
+        '管家为当前选中的项目建立群聊。members 只能填现有秘书或女仆的名字，不要发明新人。管家会自动入群。',
+        {
+          'type': 'object',
+          'properties': {
+            'title': {'type': 'string'},
+            'purpose': {'type': 'string'},
+            'members': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'description': '如 秘书-Vega、女仆-Luna',
+            },
+          },
+          'required': ['title', 'members'],
+        },
+      ),
     ];
 
 String clientAbpSystemPrompt({
@@ -160,26 +177,40 @@ class ClientAbpRuntime {
     final system = extra.isEmpty ? baseSystem : '$baseSystem\n\n$extra';
     debugPrint('[CLIENT-ABP] tools=${tools.length} msgLen=${userMessage.length}');
 
-    return _api.chatWithTools(
-      apiKey: model.effectiveApiKey,
-      baseUrl: model.effectiveBaseUrl,
-      model: model.effectiveModel,
-      userMessage: userMessage,
-      history: history,
-      systemPrompt: system,
-      attachments: attachments,
-      tools: tools,
-      toolChoice: 'auto',
-      onToolCall: (name, args) async {
-        debugPrint('[CLIENT-ABP] tool=$name args=$args');
-        final out = await _executor.execute(
-          name,
-          args,
-          currentMindNodeId: currentMindNodeId,
-        );
-        debugPrint('[CLIENT-ABP] tool=$name resultLen=${out.length}');
-        return out;
-      },
-    );
+    try {
+      return await _api.chatWithTools(
+        apiKey: model.effectiveApiKey,
+        baseUrl: model.effectiveBaseUrl,
+        model: model.effectiveModel,
+        userMessage: userMessage,
+        history: history,
+        systemPrompt: system,
+        attachments: attachments,
+        tools: tools,
+        toolChoice: 'auto',
+        onToolCall: (name, args) async {
+          debugPrint('[CLIENT-ABP] tool=$name args=$args');
+          final out = await _executor.execute(
+            name,
+            args,
+            currentMindNodeId: currentMindNodeId,
+          );
+          debugPrint('[CLIENT-ABP] tool=$name resultLen=${out.length}');
+          return out;
+        },
+      );
+    } catch (e) {
+      // 3B 等小模型经常不接受 tools。退回纯对话，历史仍然带上。
+      debugPrint('[CLIENT-ABP] tools failed, plain chat: $e');
+      return _api.chat(
+        apiKey: model.effectiveApiKey,
+        baseUrl: model.effectiveBaseUrl,
+        model: model.effectiveModel,
+        userMessage: userMessage,
+        history: history,
+        systemPrompt: system,
+        attachments: attachments,
+      );
+    }
   }
 }

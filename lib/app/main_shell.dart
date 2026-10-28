@@ -8,6 +8,7 @@ import 'theme_notifier.dart';
 import 'theme_policy_service.dart';
 import 'frosted_background.dart';
 
+import '../features/assistant/assistant_desk_page.dart';
 import '../features/assistant/assistant_page.dart';
 import '../features/auth/services/auth_repository.dart';
 import '../features/auth/services/local_account_import_service.dart';
@@ -30,6 +31,7 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   int _currentIndex = 0;
   bool _showingAlarmDialog = false;
+  bool _deskOpen = false;
 
   @override
   void initState() {
@@ -173,8 +175,22 @@ class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
       animationDuration: Duration.zero,
       selectedIndex: _currentIndex,
       onDestinationSelected: (int index) {
+        if (index == 2) {
+          if (_deskOpen) return;
+          setState(() => _deskOpen = true);
+          Navigator.of(context)
+              .push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const AssistantDeskPage(),
+                ),
+              )
+              .whenComplete(() {
+            if (mounted) setState(() => _deskOpen = false);
+          });
+          return;
+        }
         setState(() => _currentIndex = index);
-        if (index == 0 || index == 2) {
+        if (index == 0) {
           UserSyncScheduler.pullAndNotify();
         }
       },

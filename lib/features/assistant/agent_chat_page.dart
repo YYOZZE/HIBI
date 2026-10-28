@@ -18,6 +18,7 @@ import '../auth/services/user_sync_scheduler.dart';
 import 'models/agent.dart';
 import 'models/chat_attachment.dart';
 import 'models/chat_message.dart';
+import 'models/colleague_roster.dart';
 import 'models/composer_tool_mode.dart';
 import 'models/hibi_assistant.dart';
 import 'models/mind_topic_ref.dart';
@@ -41,6 +42,9 @@ class AgentChatPage extends StatefulWidget {
     this.currentMindNodeId,
     this.mindProjectTitle,
     this.initialTopicRef,
+    this.embedded = false,
+    this.onUserSent,
+    this.projectId,
   });
 
   final Agent agent;
@@ -53,6 +57,12 @@ class AgentChatPage extends StatefulWidget {
   final String? mindProjectTitle;
   /// 显式话题引用（优先于 currentMindNodeId + mindProjectTitle）
   final MindTopicRef? initialTopicRef;
+  /// 嵌在助理监视器里：不占整页，不画自己的返回栏。
+  final bool embedded;
+  /// 用户消息已入队后回调（工作日志用）。不改变对话存储。
+  final void Function(String userText)? onUserSent;
+  /// 工作台当前项目。同一人的窗口可以留着，记录按项目分开。
+  final String? projectId;
 
   @override
   State<AgentChatPage> createState() => _AgentChatPageState();
@@ -137,7 +147,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     setState(() {
       _loading = _session.isLoading(widget.agent.id);
       _queueDepth = _session.queueDepth(widget.agent.id);
-      _messages = widget.repository.getMessages(widget.agent.id).toList();
+      _messages = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).toList();
     });
     _scrollToEnd();
   }
@@ -176,14 +186,15 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   Future<void> _loadMessages() async {
     // 1) 先立刻展示本地缓存，避免打开空白。
     // 内存已有消息时勿 force 覆盖，避免与异步落盘竞态把刚写入的回复冲掉。
-    final hasMemory = widget.repository.getMessages(widget.agent.id).isNotEmpty;
+    final hasMemory = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).isNotEmpty;
     await widget.repository.loadMessages(
       widget.agent.id,
+      projectId: widget.projectId,
       force: !hasMemory,
     );
     if (mounted) {
       setState(() {
-        _messages = widget.repository.getMessages(widget.agent.id).toList();
+        _messages = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).toList();
         _loading = _session.isLoading(widget.agent.id);
       });
       _scrollToEnd();
@@ -192,8 +203,11 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     // 进行中的发送任务：勿用云端列表覆盖本地待回复消息
     if (_session.isLoading(widget.agent.id)) return;
 
-    // 希比助手走端侧 ClientAbp，对话不进后端 conversation；禁止服务端 merge 覆盖本地历史。
-    if (HibiAssistant.isBuiltInId(widget.agent.id)) return;
+    // 固定同事走端侧，对话不进后端 conversation；禁止服务端 merge 覆盖本地历史。
+    if (ColleagueRoster.isStaffId(widget.agent.id) ||
+        HibiAssistant.isBuiltInId(widget.agent.id)) {
+      return;
+    }
 
     // 2) 登录态后台拉取云端，成功后再合并刷新（失败保留本地）
     final token = AuthRepository.instance.currentUser?.token;
@@ -240,7 +254,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       if (serverMsgs.isEmpty) return;
 
       // 以本地全量为基，再并入服务端同 id 更新；避免丢弃已有 srv_ 历史。
-      final local = widget.repository.getMessages(widget.agent.id);
+      final local = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId);
       final byId = <String, ChatMessage>{
         for (final m in local) m.id: m,
       };
@@ -251,10 +265,10 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
         ..sort((a, b) => a.timestamp.compareTo(b.timestamp));
       // 服务端明显更短时不整表替换，防止不完整列表冲掉本地完整历史
       if (merged.length < local.length) return;
-      await widget.repository.replaceMessages(widget.agent.id, merged);
+      await widget.repository.replaceMessages(widget.agent.id, merged, projectId: widget.projectId);
       if (mounted && !_session.isLoading(widget.agent.id)) {
         setState(() {
-          _messages = widget.repository.getMessages(widget.agent.id).toList();
+          _messages = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).toList();
         });
         _scrollToEnd();
       }
@@ -264,11 +278,12 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   }
 
   void _onSyncEpoch() {
-    // 同步 epoch 可能只是日程刷新；希比助手仅刷新本地列表，不做服务端 merge。
-    if (HibiAssistant.isBuiltInId(widget.agent.id)) {
+    // 同步 epoch 可能只是日程刷新；固定同事只刷新本地列表。
+    if (ColleagueRoster.isStaffId(widget.agent.id) ||
+        HibiAssistant.isBuiltInId(widget.agent.id)) {
       if (!mounted) return;
       setState(() {
-        _messages = widget.repository.getMessages(widget.agent.id).toList();
+        _messages = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).toList();
       });
       return;
     }
@@ -276,7 +291,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
   }
 
   void _refreshMessages() {
-    setState(() => _messages = widget.repository.getMessages(widget.agent.id).toList());
+    setState(() => _messages = widget.repository.getMessages(widget.agent.id, projectId: widget.projectId).toList());
   }
 
   @override
@@ -432,7 +447,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       ),
     );
     if (ok == true && mounted) {
-      widget.repository.removeMessageById(widget.agent.id, msg.id);
+      widget.repository.removeMessageById(widget.agent.id, msg.id, projectId: widget.projectId);
       _refreshMessages();
     }
   }
@@ -457,7 +472,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       ),
     );
     if (ok == true && mounted) {
-      widget.repository.removeMessagesByIds(widget.agent.id, Set<String>.from(_selectedIds));
+      widget.repository.removeMessagesByIds(widget.agent.id, Set<String>.from(_selectedIds), projectId: widget.projectId);
       _exitSelectionMode();
       _refreshMessages();
     }
@@ -536,7 +551,9 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
       topicRef: _topicRef,
       attachments: attachments,
       toolMode: mode,
+      projectId: widget.projectId,
     );
+    widget.onUserSent?.call(text);
     if (mounted && mode != ComposerToolMode.none) {
       setState(() => _toolMode = ComposerToolMode.none);
     }
@@ -1270,52 +1287,66 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
+    final embedded = widget.embedded;
+    final showAppBar = !embedded || _selectionMode;
+
     return Scaffold(
       backgroundColor: Colors.transparent,
-      extendBodyBehindAppBar: true,
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
-        surfaceTintColor: Colors.transparent,
-        shadowColor: Colors.transparent,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        leading: _selectionMode
-            ? IconButton(
-                icon: const Icon(Icons.close),
-                onPressed: _exitSelectionMode,
-                tooltip: '取消',
-              )
-            : null,
-        automaticallyImplyLeading: !_selectionMode,
-        title: _selectionMode
-            ? Text('已选 ${_selectedIds.length} 条')
-            : Text(widget.agent.name),
-        actions: _selectionMode
-            ? [
-                TextButton(
-                  onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
-                  child: Text(
-                    '删除',
-                    style: TextStyle(
-                      color: _selectedIds.isEmpty ? colorScheme.onSurfaceVariant : colorScheme.error,
-                      fontWeight: FontWeight.w400,
-                    ),
-                  ),
-                ),
-              ]
-            : null,
-      ),
+      extendBodyBehindAppBar: showAppBar,
+      appBar: showAppBar
+          ? AppBar(
+              backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+              surfaceTintColor: Colors.transparent,
+              shadowColor: Colors.transparent,
+              elevation: 0,
+              scrolledUnderElevation: 0,
+              leading: _selectionMode
+                  ? IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: _exitSelectionMode,
+                      tooltip: '取消',
+                    )
+                  : null,
+              automaticallyImplyLeading: !embedded && !_selectionMode,
+              title: _selectionMode
+                  ? Text('已选 ${_selectedIds.length} 条')
+                  : Text(widget.agent.name),
+              actions: _selectionMode
+                  ? [
+                      TextButton(
+                        onPressed: _selectedIds.isEmpty ? null : _deleteSelected,
+                        child: Text(
+                          '删除',
+                          style: TextStyle(
+                            color: _selectedIds.isEmpty
+                                ? colorScheme.onSurfaceVariant
+                                : colorScheme.error,
+                            fontWeight: FontWeight.w400,
+                          ),
+                        ),
+                      ),
+                    ]
+                  : null,
+            )
+          : null,
       body: Stack(
         fit: StackFit.expand,
         children: [
-          const FrostedBackground(),
+          if (!embedded) const FrostedBackground(),
           Column(
             children: [
-              SizedBox(height: MediaQuery.of(context).padding.top + kToolbarHeight),
+              SizedBox(
+                height: showAppBar
+                    ? MediaQuery.of(context).padding.top + kToolbarHeight
+                    : 0,
+              ),
               Expanded(
                 child: ListView.builder(
                   controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: widget.embedded ? 10 : 16,
+                    vertical: widget.embedded ? 6 : 12,
+                  ),
                   itemCount: _messages.length + (_loading ? 1 : 0),
                   itemBuilder: (context, index) {
                     if (index == _messages.length) {
@@ -1404,6 +1435,7 @@ class _AgentChatPageState extends State<AgentChatPage> with SingleTickerProvider
                   asrConfigured: _asrConfigured,
                   isDesktop: _isDesktop,
                   isRecording: _isRecording,
+                  compact: widget.embedded,
                   onToggleVoice: _toggleVoiceMode,
                   onVoiceLongPressStart: _onVoiceLongPressStart,
                   onVoiceLongPressMove: _onVoiceLongPressMove,
@@ -1854,6 +1886,7 @@ class _ChatInputBar extends StatelessWidget {
     this.onHoldToTalkPointerMove,
     this.onHoldToTalkPointerUp,
     this.onHoldToTalkPointerCancel,
+    this.compact = false,
   });
 
   final TextEditingController inputController;
@@ -1880,6 +1913,7 @@ class _ChatInputBar extends StatelessWidget {
   final void Function(PointerMoveEvent)? onHoldToTalkPointerMove;
   final void Function(PointerUpEvent)? onHoldToTalkPointerUp;
   final void Function(PointerCancelEvent)? onHoldToTalkPointerCancel;
+  final bool compact;
 
   static const double _shellRadius = 22;
   static const double _actionSize = 38;
@@ -1908,37 +1942,39 @@ class _ChatInputBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+          padding: EdgeInsets.fromLTRB(compact ? 10 : 16, compact ? 2 : 4, compact ? 10 : 16, compact ? 6 : 10),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: shellFill,
-                  borderRadius: BorderRadius.circular(astral ? 24 : _shellRadius),
+                  borderRadius: BorderRadius.circular(compact ? 14 : (astral ? 24 : _shellRadius)),
                   border: Border.all(
                     color: isRecording
                         ? colorScheme.primary.withOpacity(0.7)
-                        : colorScheme.outline.withOpacity(isDark ? 0.38 : 0.28),
-                    width: isRecording ? 1.4 : 1.0,
+                        : colorScheme.outline.withOpacity(isDark ? 0.28 : 0.28),
+                    width: isRecording ? 1.2 : 1.0,
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(isDark ? 0.32 : 0.07),
-                      blurRadius: 18,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
+                  boxShadow: compact
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(isDark ? 0.32 : 0.07),
+                            blurRadius: 18,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+                  padding: EdgeInsets.fromLTRB(compact ? 10 : 12, compact ? 2 : 6, compact ? 10 : 12, compact ? 2 : 6),
                   child: voiceInputMode
                       ? _buildVoiceInput(context, theme, colorScheme)
                       : _buildTextInput(context, theme, colorScheme),
                 ),
               ),
               if (!voiceInputMode) ...[
-                const SizedBox(height: 8),
+                SizedBox(height: compact ? 4 : 8),
                 _buildToolStrip(context, theme, colorScheme),
               ],
             ],
@@ -2058,11 +2094,11 @@ class _ChatInputBar extends StatelessWidget {
           onTap: onPressed,
           borderRadius: BorderRadius.circular(12),
           child: SizedBox(
-            width: 36,
-            height: 36,
+            width: compact ? 28 : 36,
+            height: compact ? 28 : 36,
             child: Icon(
               icon,
-              size: 20,
+              size: compact ? 16 : 20,
               color: colorScheme.onSurface.withOpacity(enabled ? 0.9 : 0.35),
             ),
           ),
@@ -2092,15 +2128,18 @@ class _ChatInputBar extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 8 : 11,
+            vertical: compact ? 4 : 8,
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 16, color: fg),
-              const SizedBox(width: 5),
+              Icon(icon, size: compact ? 14 : 16, color: fg),
+              const SizedBox(width: 4),
               Text(
                 label,
-                style: theme.textTheme.labelMedium?.copyWith(
+                style: (compact ? theme.textTheme.labelSmall : theme.textTheme.labelMedium)?.copyWith(
                   color: fg,
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                 ),
@@ -2128,8 +2167,8 @@ class _ChatInputBar extends StatelessWidget {
           onTap: onPressed,
           customBorder: const CircleBorder(),
           child: SizedBox(
-            width: _actionSize,
-            height: _actionSize,
+            width: compact ? 30 : _actionSize,
+            height: compact ? 30 : _actionSize,
             child: Icon(
               icon,
               size: 22,
@@ -2164,8 +2203,8 @@ class _ChatInputBar extends StatelessWidget {
           onTap: onPressed,
           customBorder: const CircleBorder(),
           child: SizedBox(
-            width: _actionSize,
-            height: _actionSize,
+            width: compact ? 30 : _actionSize,
+            height: compact ? 30 : _actionSize,
             child: Icon(icon, size: 20, color: fg),
           ),
         ),
@@ -2248,6 +2287,11 @@ class _ChatInputBar extends StatelessWidget {
               color: colorScheme.onSurface,
               height: 1.35,
             ),
+            inputFormatters: [
+              _EnterSendsFormatter(() {
+                if (canSend) onSend();
+              }),
+            ],
             decoration: InputDecoration(
               hintText: toolMode.hint,
               hintStyle: theme.textTheme.bodyMedium?.copyWith(
@@ -2272,6 +2316,25 @@ class _ChatInputBar extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+class _EnterSendsFormatter extends TextInputFormatter {
+  _EnterSendsFormatter(this.onSubmit);
+
+  final VoidCallback onSubmit;
+
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    if (HardwareKeyboard.instance.isShiftPressed) return newValue;
+    final oldBreaks = '\n'.allMatches(oldValue.text).length;
+    final newBreaks = '\n'.allMatches(newValue.text).length;
+    final sameText = newValue.text.replaceAll('\n', '') == oldValue.text.replaceAll('\n', '');
+    if (newBreaks == oldBreaks + 1 && sameText) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => onSubmit());
+      return oldValue;
+    }
+    return newValue;
   }
 }
 

@@ -8,8 +8,8 @@ void main() {
       final names = clientAbpTools()
           .map((t) => (t['function'] as Map)['name'] as String)
           .toList();
-      expect(names, containsAll(['create_schedule', 'get_mind_canvas', 'get_schedule']));
-      expect(names.length, 7);
+      expect(names, containsAll(['create_schedule', 'get_mind_canvas', 'get_schedule', 'create_group_chat']));
+      expect(names.length, 8);
       expect(kClientAbpDefaultReminderMinutes, 15);
     });
   });

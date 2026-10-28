@@ -5,6 +5,8 @@ import '../../../mind/models/mind_node.dart';
 import '../../../mind/services/mind_repository.dart';
 import '../../../schedule/models/schedule_event.dart';
 import '../../../schedule/schedule_event_store.dart';
+import '../../models/colleague_roster.dart';
+import '../project_group_store.dart';
 
 /// 未指定提醒时默认提前分钟数（与 runtime 工具描述共用，避免循环 import）。
 const int kClientAbpDefaultReminderMinutes = 15;
@@ -41,11 +43,48 @@ class ClientAbpExecutor {
           return _deleteSchedule(args);
         case 'set_block_reminder':
           return await _setBlockReminder(args, currentMindNodeId);
+        case 'create_group_chat':
+          return await _createGroup(args);
         default:
           return jsonEncode({'error': '未知工具: $name'});
       }
     } catch (e) {
       return jsonEncode({'error': e.toString()});
+    }
+  }
+
+  Future<String> _createGroup(Map<String, dynamic> args) async {
+    if (ProjectGroupStore.focusedProjectId == null ||
+        ProjectGroupStore.focusedProjectId!.isEmpty) {
+      return jsonEncode({'ok': false, 'error': '左侧还没有选中项目，不能建群'});
+    }
+    final rawMembers = args['members'];
+    final tokens = <String>[];
+    if (rawMembers is List) {
+      tokens.addAll(rawMembers.map((e) => e.toString()));
+    } else {
+      tokens.addAll(
+        (rawMembers ?? '').toString().split(RegExp(r'[,，、\s]+')),
+      );
+    }
+    try {
+      final group = await ProjectGroupStore.instance.create(
+        projectId: ProjectGroupStore.focusedProjectId!,
+        title: (args['title'] ?? '').toString(),
+        purpose: (args['purpose'] ?? '').toString(),
+        memberTokens: tokens,
+      );
+      final names = group.memberIds
+          .map((id) => ColleagueRoster.tryById(id)?.name ?? id)
+          .join('、');
+      return jsonEncode({
+        'ok': true,
+        'group_id': group.id,
+        'title': group.title,
+        'members': names,
+      });
+    } catch (e) {
+      return jsonEncode({'ok': false, 'error': e.toString()});
     }
   }
 

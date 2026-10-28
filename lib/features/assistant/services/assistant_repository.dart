@@ -8,6 +8,7 @@ import '../../auth/services/account_storage_paths.dart';
 import '../../auth/services/user_sync_scheduler.dart';
 import '../models/agent.dart';
 import '../models/chat_message.dart';
+import '../models/colleague_roster.dart';
 import '../models/hibi_assistant.dart';
 
 /// 智能体与对话本地持久化（后续可改为从后端同步）
@@ -31,8 +32,15 @@ class AssistantRepository {
 
   List<Agent> get agents => List.unmodifiable(_agents);
 
-  List<ChatMessage> getMessages(String agentId) {
-    return List.unmodifiable(_messages[agentId] ?? []);
+  List<ChatMessage> getMessages(String agentId, {String? projectId}) {
+    return List.unmodifiable(_messages[_scopeKey(agentId, projectId)] ?? []);
+  }
+
+  /// 有项目时按「人 + 项目」分开存。不带项目的旧对话仍走原来的文件。
+  static String _scopeKey(String agentId, String? projectId) {
+    final project = projectId?.trim() ?? '';
+    if (project.isEmpty) return agentId;
+    return '${agentId}__$project';
   }
 
   Future<void> _loadAgents() async {
@@ -53,34 +61,28 @@ class AssistantRepository {
     await _ensureBuiltinAndCleanupDemos();
   }
 
-  /// 保证希比助手存在且置顶；一次性清除非内置的旧 demo/杂项智能体
+  /// 保证管家、秘书、女仆都在，名称与职能以代码为准；对话文件按 id 保留。
   Future<void> _ensureBuiltinAndCleanupDemos() async {
     final prefs = await SharedPreferences.getInstance();
     final cleared = prefs.getBool(_demoClearedPrefsKey) == true;
 
     if (!cleared) {
       // 一次性：去掉啊肥/肥呆/自动创建等，仅保留内置
-      final keep = _agents.where((a) => a.isBuiltIn || a.id == HibiAssistant.id).toList();
+      final keep = _agents.where((a) => a.isBuiltIn || ColleagueRoster.isStaffId(a.id)).toList();
       _agents
         ..clear()
         ..addAll(keep);
       await prefs.setBool(_demoClearedPrefsKey, true);
     }
 
-    final idx = _agents.indexWhere((a) => a.id == HibiAssistant.id);
-    if (idx < 0) {
-      _agents.insert(0, HibiAssistant.create());
-    } else {
-      // 强制覆盖名称/职能/标星（写死在代码）
-      final old = _agents[idx];
-      _agents[idx] = Agent(
-        id: HibiAssistant.id,
-        name: HibiAssistant.name,
-        role: HibiAssistant.role,
-        createdAt: old.createdAt,
-        isBuiltIn: true,
-        isPinned: true,
-      );
+    for (final spec in ColleagueRoster.all) {
+      final idx = _agents.indexWhere((a) => a.id == spec.id);
+      if (idx < 0) {
+        _agents.add(spec.toAgent());
+      } else {
+        final old = _agents[idx];
+        _agents[idx] = spec.toAgent(createdAt: old.createdAt);
+      }
     }
     _sortAgents();
     await _saveAgents();
@@ -88,8 +90,8 @@ class AssistantRepository {
 
   void _sortAgents() {
     _agents.sort((a, b) {
-      if (a.isPinned != b.isPinned) return a.isPinned ? -1 : 1;
-      if (a.isBuiltIn != b.isBuiltIn) return a.isBuiltIn ? -1 : 1;
+      final rank = ColleagueRoster.rankOf(a.id).compareTo(ColleagueRoster.rankOf(b.id));
+      if (rank != 0) return rank;
       return b.createdAt.compareTo(a.createdAt);
     });
   }
@@ -129,7 +131,7 @@ class AssistantRepository {
   }
 
   Future<void> updateAgentName(String id, String name) async {
-    if (HibiAssistant.isBuiltInId(id)) return;
+    if (ColleagueRoster.isStaffId(id)) return;
     final i = _agents.indexWhere((a) => a.id == id);
     if (i >= 0) {
       _agents[i].name = name.trim().isEmpty ? '未命名智能体' : name.trim();
@@ -138,7 +140,7 @@ class AssistantRepository {
   }
 
   Future<void> updateAgentRole(String id, String role) async {
-    if (HibiAssistant.isBuiltInId(id)) return;
+    if (ColleagueRoster.isStaffId(id)) return;
     final i = _agents.indexWhere((a) => a.id == id);
     if (i >= 0) {
       _agents[i].role = role.trim();
@@ -147,7 +149,7 @@ class AssistantRepository {
   }
 
   Future<void> deleteAgent(String id) async {
-    if (HibiAssistant.isBuiltInId(id)) return;
+    if (ColleagueRoster.isStaffId(id)) return;
     _agents.removeWhere((a) => a.id == id);
     _messages.remove(id);
     await _saveAgents();
@@ -165,50 +167,62 @@ class AssistantRepository {
   /// 按 agent 串行落盘，避免并发 _saveMessages 互相覆盖。
   final Map<String, Future<void>> _saveLocks = {};
 
-  Future<void> addMessage(String agentId, ChatMessage message) async {
-    _messages.putIfAbsent(agentId, () => []).add(message);
-    await _saveMessages(agentId);
+  Future<void> addMessage(String agentId, ChatMessage message, {String? projectId}) async {
+    final key = _scopeKey(agentId, projectId);
+    _messages.putIfAbsent(key, () => []).add(message);
+    await _saveMessages(key);
   }
 
   /// 用服务端消息列表替换本地缓存（按 id 去重）
-  Future<void> replaceMessages(String agentId, List<ChatMessage> messages) async {
-    _messages[agentId] = List<ChatMessage>.from(messages);
-    await _saveMessages(agentId);
+  Future<void> replaceMessages(
+    String agentId,
+    List<ChatMessage> messages, {
+    String? projectId,
+  }) async {
+    final key = _scopeKey(agentId, projectId);
+    _messages[key] = List<ChatMessage>.from(messages);
+    await _saveMessages(key);
   }
 
   /// 按消息 id 删除单条（不存在则忽略）
-  Future<void> removeMessageById(String agentId, String messageId) async {
-    final list = _messages[agentId];
+  Future<void> removeMessageById(String agentId, String messageId, {String? projectId}) async {
+    final key = _scopeKey(agentId, projectId);
+    final list = _messages[key];
     if (list == null) return;
     list.removeWhere((m) => m.id == messageId);
-    await _saveMessages(agentId);
+    await _saveMessages(key);
   }
 
   /// 批量按 id 删除；删完后持久化一次
-  Future<void> removeMessagesByIds(String agentId, Set<String> messageIds) async {
+  Future<void> removeMessagesByIds(
+    String agentId,
+    Set<String> messageIds, {
+    String? projectId,
+  }) async {
     if (messageIds.isEmpty) return;
-    final list = _messages[agentId];
+    final key = _scopeKey(agentId, projectId);
+    final list = _messages[key];
     if (list == null) return;
     list.removeWhere((m) => messageIds.contains(m.id));
-    await _saveMessages(agentId);
+    await _saveMessages(key);
   }
 
-  Future<void> _saveMessages(String agentId) async {
-    final prev = _saveLocks[agentId] ?? Future<void>.value();
+  Future<void> _saveMessages(String scopeKey) async {
+    final prev = _saveLocks[scopeKey] ?? Future<void>.value();
     final done = Completer<void>();
-    _saveLocks[agentId] = done.future;
+    _saveLocks[scopeKey] = done.future;
     await prev;
     try {
-      final list = List<ChatMessage>.from(_messages[agentId] ?? const []);
+      final list = List<ChatMessage>.from(_messages[scopeKey] ?? const []);
       final dir = await _dataDir();
-      final file = File('${dir.path}/messages_$agentId.json');
+      final file = File('${dir.path}/messages_$scopeKey.json');
       await file.writeAsString(jsonEncode(list.map((m) => m.toJson()).toList()));
       UserSyncScheduler.requestPush();
     } catch (_) {
     } finally {
       done.complete();
-      if (identical(_saveLocks[agentId], done.future)) {
-        _saveLocks.remove(agentId);
+      if (identical(_saveLocks[scopeKey], done.future)) {
+        _saveLocks.remove(scopeKey);
       }
     }
   }
@@ -234,20 +248,21 @@ class AssistantRepository {
   }
 
   /// [force] 为 true 时强制从磁盘重读（覆盖内存）
-  Future<void> loadMessages(String agentId, {bool force = false}) async {
-    if (!force && _messages.containsKey(agentId)) return;
+  Future<void> loadMessages(String agentId, {bool force = false, String? projectId}) async {
+    final key = _scopeKey(agentId, projectId);
+    if (!force && _messages.containsKey(key)) return;
     try {
       final dir = await _dataDir();
-      final file = File('${dir.path}/messages_$agentId.json');
+      final file = File('${dir.path}/messages_$key.json');
       if (await file.exists()) {
         final list = jsonDecode(await file.readAsString()) as List<dynamic>;
-        _messages[agentId] =
+        _messages[key] =
             list.map((e) => ChatMessage.fromJson(e as Map<String, dynamic>)).toList();
       } else {
-        _messages[agentId] = [];
+        _messages[key] = [];
       }
     } catch (_) {
-      _messages[agentId] = [];
+      _messages[key] = [];
     }
   }
 }

@@ -11,13 +11,18 @@ import '../../profile/services/agent_config_service.dart';
 import '../models/agent.dart';
 import '../models/chat_attachment.dart';
 import '../models/chat_message.dart';
+import '../models/colleague_roster.dart';
 import '../models/composer_tool_mode.dart';
-import '../models/hibi_assistant.dart';
 import '../models/mind_topic_ref.dart';
 import 'assistant_api.dart';
 import 'assistant_repository.dart';
+import 'assistant_project_store.dart';
 import 'client_abp/client_abp_runtime.dart';
+import 'colleague_endpoint_store.dart';
+import 'desk_project_context.dart';
 import 'generated_content_save_path.dart';
+import 'group_discussion.dart';
+import 'project_group_store.dart';
 import 'generated_document_service.dart';
 import 'openai_compatible_direct_api.dart';
 
@@ -32,6 +37,7 @@ class _QueuedSend {
     required this.mindNodeId,
     required this.attachments,
     this.toolMode = ComposerToolMode.none,
+    this.projectId,
   });
 
   final Agent agent;
@@ -44,6 +50,8 @@ class _QueuedSend {
   final String? mindNodeId;
   final List<ChatAttachment> attachments;
   final ComposerToolMode toolMode;
+  /// 工作台项目。同一人的记录按项目分开。
+  final String? projectId;
 }
 
 /// 按 agentId 托管进行中的发送任务与消息队列：
@@ -114,6 +122,7 @@ class ChatSessionService {
     MindTopicRef? topicRef,
     List<ChatAttachment> attachments = const [],
     ComposerToolMode toolMode = ComposerToolMode.none,
+    String? projectId,
   }) async {
     final agentId = agent.id;
     final trimmed = userText.trim();
@@ -132,6 +141,7 @@ class ChatSessionService {
             content: '已选择视频（${videoOnlyNotes.join('、')}），'
                 '当前模型暂不支持解析视频内容。请补充文字说明，或改用图片/文档。',
           ),
+          projectId: projectId,
         );
         _bump(agentId);
       }
@@ -188,7 +198,7 @@ class ChatSessionService {
       attachments: persistedAtts,
       topicLabel: topicRef?.displayLabel,
     );
-    await repository.addMessage(agentId, userMsg);
+    await repository.addMessage(agentId, userMsg, projectId: projectId);
     _bump(agentId);
 
     final item = _QueuedSend(
@@ -201,6 +211,7 @@ class ChatSessionService {
       mindNodeId: topicRef?.projectId ?? agent.mindNodeId,
       attachments: sendableAtt,
       toolMode: toolMode,
+      projectId: projectId,
     );
     final q = _queues.putIfAbsent(agentId, () => <_QueuedSend>[]);
     q.add(item);
@@ -251,7 +262,7 @@ class ChatSessionService {
 
     try {
       final history = item.repository
-          .getMessages(agentId)
+          .getMessages(agentId, projectId: item.projectId)
           .where((m) => m.id != item.userMsgId)
           .map<Map<String, String>>(
             (m) => {'role': m.role, 'content': m.historyContent},
@@ -259,9 +270,12 @@ class ChatSessionService {
           .toList();
       final token = AuthRepository.instance.currentUser?.token;
       final useBackend = token != null && token.isNotEmpty;
-      final customModel = await AgentConfigService.activeChatConfig();
+      final staff = ColleagueRoster.isStaffId(agentId);
+      final customModel = staff
+          ? await ColleagueEndpointStore.resolve(agentId)
+          : await AgentConfigService.activeChatConfig();
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        await _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId, item.projectId);
         return;
       }
       final attPayload =
@@ -293,12 +307,13 @@ class ChatSessionService {
         ]);
       } catch (e) {
         if (_isStale(agentId, gen) || cancelled || cancelWaiter.isCompleted) {
-          await _writeCancelled(item.repository, agentId);
+          await _writeCancelled(item.repository, agentId, item.projectId);
           return;
         }
         await item.repository.addMessage(
           agentId,
           ChatMessage(role: 'assistant', content: _friendlyChatError(e)),
+          projectId: item.projectId,
         );
         _bump(agentId);
         return;
@@ -308,7 +323,7 @@ class ChatSessionService {
           replyOrError is _CancelSentinel ||
           _isStale(agentId, gen) ||
           cancelWaiter.isCompleted) {
-        await _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId, item.projectId);
         // 后台请求仍可能完成，结果丢弃
         unawaited(
           replyFuture.catchError(
@@ -320,14 +335,14 @@ class ChatSessionService {
 
       final packed = replyOrError as _AssistantReply;
       // 端侧 ABP 已写本地日程；若仍走后端 tools，则 pull 合并云端结果。
-      if (useBackend && !HibiAssistant.isBuiltInId(agentId)) {
+      if (useBackend && !ColleagueRoster.isStaffId(agentId)) {
         await UserSyncScheduler.pullAfterAssistantToolUse();
       }
-      // 希比助手端侧已写 ScheduleEventStore（eventsNotifier），勿 bump syncEpoch：
+      // 同事走端侧工具时已写 ScheduleEventStore，勿 bump syncEpoch：
       // 会触发聊天页 _loadMessages 的服务端 merge，冲掉本地完整历史。
 
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        await _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId, item.projectId);
         return;
       }
 
@@ -338,16 +353,18 @@ class ChatSessionService {
           content: packed.content,
           attachments: packed.attachments,
         ),
+        projectId: item.projectId,
       );
       _bump(agentId);
     } catch (e) {
       if (_isStale(agentId, gen) || cancelWaiter.isCompleted) {
-        await _writeCancelled(item.repository, agentId);
+        await _writeCancelled(item.repository, agentId, item.projectId);
         return;
       }
       await item.repository.addMessage(
         agentId,
         ChatMessage(role: 'assistant', content: _friendlyChatError(e)),
+        projectId: item.projectId,
       );
       _bump(agentId);
     } finally {
@@ -360,10 +377,15 @@ class ChatSessionService {
   bool _isStale(String agentId, int gen) =>
       (_generation[agentId] ?? 0) != gen;
 
-  Future<void> _writeCancelled(AssistantRepository repository, String agentId) async {
+  Future<void> _writeCancelled(
+    AssistantRepository repository,
+    String agentId,
+    String? projectId,
+  ) async {
     await repository.addMessage(
       agentId,
       ChatMessage(role: 'assistant', content: '（已打断）'),
+      projectId: projectId,
     );
     _bump(agentId);
   }
@@ -439,13 +461,33 @@ class ChatSessionService {
       return _AssistantReply(content: reply);
     }
 
-    // 希比助手：端侧直连模型 + 本地 tools，不依赖后端执行工具。
-    if (HibiAssistant.isBuiltInId(agent.id)) {
+    // 管家 / 秘书 / 女仆：按各自接口直连，并带上已有对话。本地工具写日程和思维。
+    if (ColleagueRoster.isStaffId(agent.id)) {
       if (customModel == null || !customModel.hasApiKey) {
         throw Exception(
-          '希比助手在 App 端侧运行。请先在「设置 → 智能体配置」填写并选中火山/OpenAI 兼容 API Key。',
+          '请先在「设置 → 同事接口」为${agent.name}配置可用接口。',
         );
       }
+      final projectId = ProjectGroupStore.focusedProjectId;
+      if (agent.id == ColleagueRoster.butlerId &&
+          projectId != null &&
+          GroupOrchestrator.wantsGroup(rawUserText)) {
+        final group = await GroupOrchestrator.openForRequest(
+          projectId: projectId,
+          projectTitle: DeskProjectContext.title,
+          logs: AssistantProjectStore.instance.logsOf(projectId),
+          request: rawUserText,
+        );
+        GroupOrchestrator.opened.value = (id: group.id, userText: rawUserText);
+        return _AssistantReply(
+          content: '已建立群聊「${group.title}」。请到右侧群聊里看大家发言。',
+        );
+      }
+      final projectBrief = DeskProjectContext.promptFor(agent.id);
+      final extra = [
+        if (projectBrief.isNotEmpty) projectBrief,
+        if (modeExtra.isNotEmpty) modeExtra,
+      ].join('\n\n');
       final reply = await ClientAbpRuntime().chat(
         agent: agent,
         model: customModel,
@@ -453,7 +495,7 @@ class ChatSessionService {
         history: history,
         currentMindNodeId: mindNodeId,
         attachments: attachments,
-        systemExtra: modeExtra,
+        systemExtra: extra.isEmpty ? null : extra,
       );
       return afterText(reply);
     }

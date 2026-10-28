@@ -1,27 +1,17 @@
 import 'agent.dart';
+import 'colleague_roster.dart';
 
-/// 内置默认智能体「希比助手」：名称/职能写死，标星置顶，不可改名/改职能/删除。
+/// 内置管家「管家-Hibi」：名称/职能写死，标星置顶，不可改名/改职能/删除。
+/// id 保持 agent_hibi_builtin，已有对话记录继续沿用。
 /// 端侧直连模型 API + 固定 tools，本地写日程/思维。
 class HibiAssistant {
   HibiAssistant._();
 
-  static const String id = 'agent_hibi_builtin';
-  static const String name = '希比助手';
+  static const String id = ColleagueRoster.butlerId;
+  static const String name = '管家-Hibi';
 
-  /// 写死在代码中的职能说明（对模型与用户展示）
-  static const String role = '''
-你是「希比助手」，HIBI 内置智能助理。名称与职能固定，用户不可修改。
-
-你可通过 tools 真实操作本机数据（不是口头假装）：
-1. 日程：查询 / 新建 / 修改 / 删除日程与提醒。
-2. 思维导图：列出项目、读取白板、为尚无提醒的方块设置提醒。
-
-规则：
-- 用户要安排事项且信息够了，就调用 create_schedule 写入。
-- 未指定提前提醒时默认提前 15 分钟。
-- 修改/删除已有日程需用户明确同意后再执行。
-- 用简短口语回复；禁止向用户暴露 evt_/方块 id 等内部标识。
-''';
+  /// 职能与 [ColleagueRoster.butler] 相同。
+  static String get role => ColleagueRoster.butler.role;
 
   /// 列表/详情展示用的 skill 标签
   static const List<({String id, String label, String hint})> skills = [

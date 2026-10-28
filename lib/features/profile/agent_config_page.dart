@@ -356,7 +356,8 @@ class _AgentConfigPageState extends State<AgentConfigPage> {
           Text(
             '· 文本对话：选择火山/OpenAI 兼容后即时生效（改 Key/URL 仍需点保存）\n'
             '· 帮我写作 / 视频脚本：聊天底栏开启后，生成物会落盘并可在气泡内预览\n'
-            '· Skills（日程/思维导图）：需登录且后端在线，由希比助手调用\n'
+            '· 同事接口：管家、秘书、女仆默认走本地 Qwen，可在「设置 → 同事接口」逐个改。换接口会保留对话并在下次发送时带上历史\n'
+            '· Skills（日程/思维导图）：由管家和同事在端侧调用\n'
             '· 语音输入：在下方配置豆包 ASR 并启用；App 直连火山识别\n'
             '· 生成物默认目录：设置 → 智能体生成物 · 默认存储路径',
             style: theme.textTheme.bodySmall?.copyWith(
